@@ -2,6 +2,25 @@
 
 A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React + CodeMirror UI.
 
+## Status: knowledge base & markdown export (Phase 4)
+
+| Piece | State |
+|---|---|
+| **Knowledge base** per schema ("Build knowledge base"): tables, views, columns (with comments), keys, indexes, triggers, sequences, synonyms, grants, scheduler jobs, packages (members, lines, reads/writes/calls) and every dependency, including objects in *other* schemas that use yours | 180 core tests (fake database) |
+| **Every link records its source and certainty**: `dictionary / exact` (Oracle's data dictionary: dependencies, foreign keys with column pairs, indexes, triggers, synonyms, jobs) or `scan / heuristic` (package-body text scan, with member and line numbers). Where both exist the more specific kind wins (`writes` > `reads` > `calls` > `fk` > `indexes` > `uses`) and the evidence keeps every reason | tested |
+| **Coverage report**: what the knowledge base *cannot* see is listed, not hidden: wrapped packages, dynamic-SQL sites (with member), invalid objects, database-link synonyms, unreadable grants/jobs, external callers | tested |
+| Stored in the local SQLite file (latest snapshot per database and schema); survives restarts | tested |
+| **Markdown export** from any table/package page or the graph tab, one click: a single `.md`, or a `.zip` with one file per object, `README.md` index, `graph.json` (nodes, edges, evidence) and `manifest.json`. Each file has front matter with its id and typed links so a model or tool can follow them | 8 dossier tests; UI verified in demo mode |
+| A **table** file contains: columns (type, null, keys, comments), constraints and foreign keys both ways, indexes, **triggers with source**, sequences, **views with SQL**, **packages that use it with the member code and line numbers**, other schemas that use it, grants, DDL (from `DBMS_METADATA`) | tested |
+| A **package** file contains: spec, every member with signature, reads/writes/calls/called-by, dynamic-SQL lines, "no caller found", and the member code | tested |
+| Everything above **against a real Oracle** | **not run**: ignored test `knowledge_base_and_markdown_dossier_cover_a_known_schema` creates tables, a trigger, a sequence and a package and checks the result |
+
+**"Don't miss anything", honestly:** no tool can promise that. What is guaranteed here is that a miss is *visible*: the README of every export lists what could not be seen, and text that could not be read is listed as such.
+
+**Privacy:** row data is never included. Source text is masked for `IDENTIFIED BY …` and for credential-looking literals (`password := '…'`, `api_key => '…'`), **including inside comments**. This is best-effort pattern masking, not a guarantee: read an export before you share it. Exports are written only where you choose.
+
+**Not built yet:** PL/Scope as an exact source for calls, column-level lineage inside code, incremental refresh (a rebuild re-reads everything), semantic/implicit relationships (columns that join without a foreign key), AI-proposed links.
+
 ## Status: package explorer & linkage graph (Phase 3)
 
 | Piece | State |

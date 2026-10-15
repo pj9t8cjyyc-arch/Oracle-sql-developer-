@@ -162,6 +162,117 @@ pub fn table_names(sql: &str) -> String {
     names.join(" ")
 }
 
+/// Stronger masking for text that leaves the application (exports, AI context): everything
+/// [`redact_secrets`] does, plus `IDENTIFIED BY <x>` and credential-looking string literals
+/// (`password := '...'`, `api_key => '...'`) **even inside comments**, which a statement lexer skips.
+pub fn redact_for_export(text: &str) -> String {
+    let t = redact_secrets(text);
+    let mut out = String::with_capacity(t.len());
+    for line in t.split_inclusive('\n') {
+        out.push_str(&mask_line(line));
+    }
+    out
+}
+
+const SECRET_KEYS: [&str; 8] = [
+    "password",
+    "passwd",
+    "pwd",
+    "secret",
+    "api_key",
+    "apikey",
+    "token",
+    "passphrase",
+];
+
+fn mask_line(line: &str) -> String {
+    let mut s = line.to_string();
+    // IDENTIFIED BY <token | "quoted">
+    let mut from = 0;
+    loop {
+        let lower = s.to_ascii_lowercase();
+        let Some(p) = lower[from..].find("identified") else {
+            break;
+        };
+        let at = from + p;
+        let mut i = at + "identified".len();
+        let b = s.as_bytes();
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if !lower[i..].starts_with("by") {
+            from = at + 1;
+            continue;
+        }
+        i += 2;
+        let ws = i;
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i == ws || i >= b.len() {
+            from = at + 1;
+            continue;
+        }
+        let start = i;
+        let end = if b[i] == b'"' {
+            s[i + 1..].find('"').map(|q| i + 2 + q).unwrap_or(b.len())
+        } else {
+            let mut e = i;
+            while e < b.len() && !b[e].is_ascii_whitespace() && !matches!(b[e], b';' | b',' | b')')
+            {
+                e += 1;
+            }
+            e
+        };
+        if lower[start..end].starts_with("values") {
+            from = at + 1;
+            continue;
+        }
+        s.replace_range(start..end, "********");
+        from = start + 8;
+    }
+    // key := 'literal'  /  key => 'literal'  /  key = 'literal'
+    for key in SECRET_KEYS {
+        let mut from = 0;
+        loop {
+            let lower = s.to_ascii_lowercase();
+            let Some(p) = lower[from..].find(key) else {
+                break;
+            };
+            let mut i = from + p + key.len();
+            let b = s.as_bytes();
+            let skip = |mut i: usize| {
+                while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
+                    i += 1;
+                }
+                i
+            };
+            i = skip(i);
+            let op = if lower[i..].starts_with(":=") || lower[i..].starts_with("=>") {
+                2
+            } else if lower[i..].starts_with('=') {
+                1
+            } else {
+                0
+            };
+            if op == 0 {
+                from += p + key.len();
+                continue;
+            }
+            i = skip(i + op);
+            if i < b.len() && b[i] == b'\'' {
+                if let Some(q) = s[i + 1..].find('\'') {
+                    s.replace_range(i + 1..i + 1 + q, "********");
+                    from = i + 10;
+                    continue;
+                }
+            }
+            from += p + key.len();
+        }
+    }
+    s
+}
+
 /// Mask passwords before anything is stored: `IDENTIFIED BY [VALUES] x [REPLACE y]`
 /// and SQL*Plus `CONNECT user/password`.
 pub fn redact_secrets(sql: &str) -> String {
@@ -390,5 +501,24 @@ mod tests {
         assert_eq!(auto_title("create table t (a number)"), "CREATE TABLE");
         assert_eq!(auto_title("begin null; end;"), "PL/SQL");
         assert_eq!(auto_title("  -- just a note\n"), "Untitled");
+    }
+
+    #[test]
+    fn export_redaction_masks_secrets_even_in_comments_and_literals() {
+        let t = "-- ALTER USER app IDENTIFIED BY hunter2;\nCREATE USER u identified   by \"Pa ss\" quota unlimited;\nv_password := 'abc123';\nx(api_key => 'k-999', n => 1);\nIDENTIFIED BY VALUES 'abc'\nSELECT 'password is fine' FROM dual;";
+        let r = redact_for_export(t);
+        for secret in ["hunter2", "Pa ss", "abc123", "k-999"] {
+            assert!(!r.contains(secret), "{secret} leaked: {r}");
+        }
+        assert!(
+            r.contains("quota unlimited")
+                && r.contains("n => 1")
+                && r.contains("'password is fine'"),
+            "{r}"
+        );
+        assert_eq!(
+            redact_for_export("SELECT 1 FROM dual"),
+            "SELECT 1 FROM dual"
+        );
     }
 }

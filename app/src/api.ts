@@ -1,4 +1,4 @@
-import type { Completions, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
+import type { Completions, DossierOptions, KbExported, KbPreview, KbSummary, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
 import { mockApi } from "./mock";
 
 /** Every call after `connect` is scoped to one connection id, so several databases can be open at once. */
@@ -65,6 +65,11 @@ export interface Api {
   graphInfo(conn: string, owner: string, refresh: boolean): Promise<GraphInfo>;
   graphSearch(conn: string, owner: string, query: string): Promise<GNode[]>;
   graphFocus(conn: string, owner: string, focus: GraphFocus): Promise<Subgraph>;
+  // knowledge base (every object and link with its evidence) and markdown dossiers
+  kbBuild(conn: string, owner: string): Promise<KbSummary>;
+  kbStatus(conn: string, owner: string): Promise<KbSummary | null>;
+  kbPreview(conn: string, owner: string, options: DossierOptions): Promise<KbPreview>;
+  kbExport(conn: string, owner: string, options: DossierOptions, path: string, zip: boolean): Promise<KbExported>;
 }
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -141,6 +146,10 @@ async function tauriApi(): Promise<Api> {
     graphInfo: (conn, owner, refresh) => invoke("graph_info", { conn, owner, refresh }),
     graphSearch: (conn, owner, query) => invoke("graph_search", { conn, owner, query }),
     graphFocus: (conn, owner, focus) => invoke("graph_focus", { conn, owner, focus }),
+    kbBuild: (conn, owner) => invoke("kb_build", { conn, owner }),
+    kbStatus: (conn, owner) => invoke("kb_status", { conn, owner }),
+    kbPreview: (conn, owner, options) => invoke("kb_preview", { conn, owner, options }),
+    kbExport: (conn, owner, options, path, zip) => invoke("kb_export", { conn, owner, options, path, zip }),
   };
 }
 

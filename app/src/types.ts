@@ -156,9 +156,20 @@ export interface PackageDetail {
 export interface PackageAnalysis { owner: string; packages: PackageDetail[]; wrapped: number; invalid: number }
 
 export interface GNode { id: string; owner: string; name: string; kind: string }
-export interface GEdge { from: string; to: string; kind: "uses" | "fk" }
+export interface GEdge { from: string; to: string; kind: "uses" | "fk" | "indexes" | "reads" | "writes" | "calls" | "runs" }
 export interface GraphInfo { owner: string; nodes: number; edges: number; kinds: Record<string, number> }
 export type Direction = "uses" | "used_by" | "both";
 export interface GraphFocus { id: string; direction: Direction; hops: number; kinds: string[] | null; max_nodes?: number | null }
 export interface SNode extends GNode { depth: number; more: number }
 export interface Subgraph { focus: string; nodes: SNode[]; edges: GEdge[]; truncated: boolean }
+
+// ---- knowledge base + markdown export
+export interface Gap { severity: "warning" | "info"; area: string; message: string }
+export interface Coverage { gaps: Gap[]; packages: number; packages_scanned: number; packages_wrapped: number; members: number; dynamic_sql_sites: number }
+export interface KbSummary {
+  owner: string; taken_at: number; tables: number; views: number; packages: number; members: number; triggers: number; indexes: number;
+  sequences: number; nodes: number; edges: number; exact_links: number; heuristic_links: number; coverage: Coverage;
+}
+export interface DossierOptions { focus: string; direction: Direction; hops: number; include_source: boolean; max_member_lines: number; max_nodes?: number | null }
+export interface KbPreview { markdown: string; files: string[]; tokens_estimate: number; truncated: boolean; missing: string[]; preview_cut: boolean }
+export interface KbExported { path: string; bytes: number; files: number; tokens_estimate: number }
