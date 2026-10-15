@@ -45,6 +45,17 @@ A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React +
 
 **Limits:** cancel is checked between streamed chunks, so a service that stays silent keeps the call open until the timeout; the HTTP client uses the system proxy settings from the environment, but a custom corporate CA is not configurable yet; only the OpenAI-compatible request format is implemented.
 
+## Status: installers and updates
+
+| Piece | State |
+|---|---|
+| **Windows MSI** (WiX, per-machine, fixed `upgradeCode` so upgrades replace the old version) and **macOS universal DMG** (hardened runtime, entitlements that let it load the Oracle Instant Client), built by the `release` workflow when a `v*` tag is pushed; attached to a **draft** GitHub release | configuration checked in CI (`npm run check:release`); **never built or installed on Windows/macOS yet** |
+| **Signing:** macOS Developer ID + notarization (Apple secrets) and optional Windows certificate; installers are built unsigned when the secrets are missing | wired, **not exercised** |
+| **In-app updates** (feature `updater`): checks a few seconds after start, shows an **Update x.y.z** button, downloads, verifies the **signature against the key built into the app**, installs and restarts. Address can be pointed at an internal server (https only); automatic checks can be switched off | address rules tested; flow verified in demo mode; **not tried against a real feed** |
+| Release guide: keys, secrets, cutting a release, internal update servers, Instant Client, WebView2, verification commands | `docs/RELEASING.md` |
+
+**Limits:** needs your signing key, Apple/Windows certificates and a test on clean machines (see `docs/RELEASING.md`); Oracle Instant Client is not bundled; full installer download on every update (no patches); the icon is upscaled from 256 px.
+
 ## Status: sandbox (local SQLite clone)
 
 | Piece | State |

@@ -4,6 +4,7 @@ import { InsightCache } from "./badges";
 import { ConnectDialog } from "./components/Dialogs";
 import { ComparePage } from "./components/ComparePage";
 import { SandboxPage } from "./components/SandboxPage";
+import { UpdateDialog } from "./components/UpdateDialog";
 import { AiSettings } from "./components/AiSettings";
 import { GraphPage } from "./components/GraphPage";
 import { exposeAiLogin } from "./ai-login";
@@ -35,6 +36,9 @@ export default function App() {
   const [api, setApi] = useState<Api>();
   const [importing, setImporting] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [updOpen, setUpdOpen] = useState(false);
+  const [updFound, setUpdFound] = useState<import("./types").UpdateInfo>();
+  const [version, setVersion] = useState("");
   const [aiStatus, setAiStatus] = useState<import("./types").AiStatus>();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [conns, setConns] = useState<ConnState[]>([]);
@@ -57,6 +61,8 @@ export default function App() {
       setApi(a);
       exposeAiLogin(a);
       a.aiStatus().then(setAiStatus).catch(() => {});
+      // Updates: show the version, and look for a newer one a few seconds after start so startup is never slowed.
+      a.updateStatus().then((s) => { setVersion(s.current_version); if (s.enabled && s.auto_check) setTimeout(() => { a.updateCheck().then((u) => setUpdFound(u ?? undefined), () => {}); }, 8000); }).catch(() => {});
       setProfiles(await a.listProfiles());
       setConnectOpen(true);
       // Bring back the worksheets that were open when the app was last closed. They keep
@@ -244,6 +250,7 @@ export default function App() {
         <button disabled={conns.length === 0} onClick={() => { const c = connOf(activeConnId ?? "") ?? conns[0]; if (c) openGraph(c.id, ctxOwner(c)); }} title="What uses what"><Icon name="out" size={14} /> Graph</button>
         <button onClick={openCompare} title="Compare text, data or schemas"><Icon name="columns" size={14} /> Compare</button>
         <button onClick={() => openSandbox()} title="A private SQLite copy of some tables: run and change things without touching Oracle"><Icon name="database" size={14} /> Sandbox</button>
+        {updFound && <button className="primary" onClick={() => setUpdOpen(true)} title="A newer version is ready to install" data-testid="update-pill">Update {updFound.version}</button>}
         <button onClick={() => setAiOpen(true)} title={aiStatus?.signed_in && aiStatus.configured ? "AI is ready" : "Set up the AI connection"}>
           <span className={`dot ${aiStatus?.signed_in && aiStatus.configured ? "ok" : aiStatus?.configured ? "warn" : "off"}`} /> AI
         </button>
@@ -332,6 +339,7 @@ export default function App() {
         {conns.some((c) => c.profile.environment === "prod") && <span className="prod-note">PRODUCTION connected</span>}
         <span className="spacer" />
         <span className="muted">{notice}</span>
+        {version && <button className="ghost version" onClick={() => setUpdOpen(true)} title="About and updates">v{version}</button>}
       </footer>
       {connectOpen && (
         <ConnectDialog
@@ -342,6 +350,7 @@ export default function App() {
         />
       )}
       {importing && (() => { const c = connOf(activeConnId ?? "") ?? conns[0]; return c ? <ImportWizard api={api} conn={c.id} env={c.profile.environment} schemas={c.schemas} initial={{ owner: c.schemas.find((s) => s.toLowerCase() === c.user.toLowerCase()) ?? c.schemas[0], table: "" }} onClose={() => setImporting(false)} onError={onError} /> : null; })()}
+      {updOpen && <UpdateDialog api={api} found={updFound} onFound={setUpdFound} onClose={() => setUpdOpen(false)} />}
       {aiOpen && <AiSettings api={api} onClose={() => setAiOpen(false)} onChanged={setAiStatus} />}
       {searchOpen && conns.length > 0 && <SearchPalette api={api} conns={conns} activeConnId={activeConnId} onPick={pick} onPickHistory={pickHistory} onClose={() => setSearchOpen(false)} />}
     </div>

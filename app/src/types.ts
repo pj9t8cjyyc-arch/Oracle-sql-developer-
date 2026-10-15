@@ -285,3 +285,8 @@ export interface SandboxInfo { meta: SandboxMeta; bytes: number; modified: boole
 export interface TableBrief { name: string; rows: number | null }
 export interface ClonePlan { tables: { name: string; source_rows: number | null; rows_to_copy: number | null; added_as_parent: boolean }[]; rows_to_copy: number; estimated: boolean }
 export interface SandboxRun { columns: string[]; rows: (string | null)[][]; affected: number | null; truncated: boolean; elapsed_ms: number; translated: string | null; changes: string[]; wrote: boolean }
+
+// ---- updates
+export interface UpdateStatus { enabled: boolean; current_version: string; endpoint: string | null; custom_endpoint: boolean; auto_check: boolean }
+export interface UpdateInfo { version: string; notes: string | null; date: string | null }
+export interface UpdateProgress { downloaded: number; total: number | null }

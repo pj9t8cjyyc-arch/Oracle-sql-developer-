@@ -5,6 +5,7 @@ mod commands;
 mod compare;
 mod jobs;
 mod sandbox;
+mod updates;
 
 fn main() {
     tauri::Builder::default()
@@ -25,6 +26,14 @@ fn main() {
                     }
                 };
             app.manage(commands::AppState::new(store, persistent));
+            // The updater needs the public key and feed from tauri.updater.conf.json; a build without them still runs.
+            #[cfg(feature = "updater")]
+            if let Err(e) = app
+                .handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())
+            {
+                eprintln!("updates: not available ({e})");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -62,6 +71,10 @@ fn main() {
             sandbox::sandbox_delete,
             sandbox::sandbox_reset,
             sandbox::sandbox_run,
+            updates::update_status,
+            updates::update_set,
+            updates::update_check,
+            updates::update_install,
             compare::text_diff,
             compare::text_patch,
             compare::text_read_file,

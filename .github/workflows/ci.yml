@@ -23,5 +23,7 @@ jobs:
         working-directory: app
       - run: npm run test:split
         working-directory: app
+      - run: npm run check:release
+        working-directory: app
       - run: npm run build
         working-directory: app

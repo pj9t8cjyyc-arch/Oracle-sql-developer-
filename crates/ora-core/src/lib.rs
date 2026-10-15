@@ -37,5 +37,6 @@ pub mod session;
 pub mod sqltext;
 pub mod textdiff;
 pub mod tns;
+pub mod updates;
 
 pub use error::{Error, Result};

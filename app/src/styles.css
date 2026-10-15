@@ -434,3 +434,6 @@ details.adv { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10
 .sb-toolbar { display: flex; align-items: center; gap: 10px; padding: 6px 14px; border-top: 1px solid var(--line); } .sb-editor { height: 160px; flex: none; border-top: 1px solid var(--line); overflow: auto; background: var(--surface); } .sb-editor .cm-editor { height: 100%; font-size: 13px; background: var(--surface); } .sb-editor .cm-scroller { font-family: var(--mono); } .sb-trans { padding: 4px 14px; }
 .sb-results { flex: 1; min-height: 120px; position: relative; border-top: 1px solid var(--line); }
 .sb-toolbar button, .sb-head button { white-space: nowrap; flex: none; }
+
+.statusbar .version { padding: 0 6px; font-size: 11px; } .upd-found { border-left: 3px solid var(--accent, #4a8fd9); padding: 4px 10px; background: var(--bg); }
+.modal label.row { display: flex; align-items: center; gap: 8px; } .modal label.col { display: grid; gap: 4px; }

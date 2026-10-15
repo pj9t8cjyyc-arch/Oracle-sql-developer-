@@ -8,6 +8,7 @@ import { aiApi, aiListeners } from "./mock-ai";
 import { kindOf, sentSql, splitStatements } from "./split";
 import { askApi } from "./mock-ask";
 import { sandboxApi } from "./mock-sandbox";
+import { updateApi } from "./mock-update";
 import { compareApi } from "./mock-compare";
 import { graphApi } from "./mock-graph";
 import { transferApi } from "./mock-transfer";
@@ -409,6 +410,7 @@ export const mockApi: Api = {
   ...graphApi(),
   ...aiApi(),
   ...askApi(aiListeners),
+  ...updateApi(),
   ...sandboxApi({
     connName: (c) => connMeta.get(c)?.name ?? c,
     tables: (c, owner) => {
