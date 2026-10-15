@@ -303,3 +303,169 @@ fn saving_comments_round_trips_including_quotes() {
     assert!(rows[0][0].is_none(), "empty text clears the comment");
     drop_quietly(&db, "drop table ora_ide_cm purge");
 }
+
+// ------------------------------------------------- dictionary browser + sequences
+
+#[test]
+#[ignore]
+fn sequences_are_found_via_trigger_source_and_identity_columns() {
+    use ora_core::insight::table_insight;
+    let (db, profile) = connect();
+    for s in [
+        "drop table ora_ide_s purge",
+        "drop sequence ora_ide_s_seq",
+        "drop sequence ora_ide_s_dflt",
+    ] {
+        drop_quietly(&db, s);
+    }
+    exec(
+        &db,
+        "create sequence ora_ide_s_seq start with 100 increment by 5 cache 20",
+    );
+    exec(&db, "create sequence ora_ide_s_dflt");
+    // identity needs 12c+; DEFAULT seq.NEXTVAL needs 12c+ too
+    exec(&db, "create table ora_ide_s (id number primary key, code number generated always as identity, ref number default ora_ide_s_dflt.nextval, note varchar2(10))");
+    exec(&db, "create or replace trigger ora_ide_s_bi before insert on ora_ide_s for each row begin :new.id := ora_ide_s_seq.nextval; end;");
+
+    let owner = profile.user.to_uppercase();
+    let t = table_insight(&db, &owner, "ORA_IDE_S").unwrap();
+    let by = |n: &str| {
+        t.sequences
+            .iter()
+            .find(|s| s.name == n)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{n} not found in {:?}",
+                    t.sequences
+                        .iter()
+                        .map(|s| (&s.name, &s.via))
+                        .collect::<Vec<_>>()
+                )
+            })
+            .clone()
+    };
+
+    let trg = by("ORA_IDE_S_SEQ");
+    assert_eq!(
+        (trg.via.as_str(), trg.via_name.as_str(), trg.columns.clone()),
+        ("trigger", "ORA_IDE_S_BI", vec!["ID".to_string()])
+    );
+    assert_eq!(
+        (trg.increment.as_deref(), trg.cache.as_deref()),
+        (Some("5"), Some("20"))
+    );
+    assert!(t
+        .columns
+        .iter()
+        .find(|c| c.name == "ID")
+        .unwrap()
+        .sequences
+        .iter()
+        .any(|q| q.name == "ORA_IDE_S_SEQ"));
+    assert_eq!(by("ORA_IDE_S_DFLT").via, "default");
+    let ident = t
+        .sequences
+        .iter()
+        .find(|s| s.via == "identity")
+        .expect("identity column");
+    assert_eq!(ident.columns, vec!["CODE".to_string()]);
+    assert_eq!(t.triggers[0].sequences, vec!["ORA_IDE_S_SEQ".to_string()]);
+
+    for s in [
+        "drop table ora_ide_s purge",
+        "drop sequence ora_ide_s_seq",
+        "drop sequence ora_ide_s_dflt",
+    ] {
+        drop_quietly(&db, s);
+    }
+}
+
+#[test]
+#[ignore]
+fn dictionary_browser_lists_kinds_and_returns_source_ddl_and_dependencies() {
+    use ora_core::catalog::{
+        dependencies, list_objects, object_counts, object_ddl, object_source, sequence_info,
+    };
+    let (db, profile) = connect();
+    for s in [
+        "drop table ora_ide_b purge",
+        "drop sequence ora_ide_b_seq",
+        "drop procedure ora_ide_b_proc",
+    ] {
+        drop_quietly(&db, s);
+    }
+    exec(&db, "create sequence ora_ide_b_seq");
+    exec(
+        &db,
+        "create table ora_ide_b (id number primary key, v varchar2(10))",
+    );
+    exec(&db, "create index ora_ide_b_ix on ora_ide_b (v)");
+    exec(&db, "create or replace trigger ora_ide_b_trg before insert on ora_ide_b for each row begin :new.id := ora_ide_b_seq.nextval; end;");
+    exec(&db, "create or replace procedure ora_ide_b_proc as begin insert into ora_ide_b (v) values ('x'); end;");
+    let owner = profile.user.to_uppercase();
+
+    let counts = object_counts(&db, &owner).unwrap();
+    for k in ["TABLE", "INDEX", "SEQUENCE", "TRIGGER", "PROCEDURE"] {
+        assert!(
+            counts.get(k).copied().unwrap_or(0) >= 1,
+            "{k} missing in {counts:?}"
+        );
+    }
+    let idx = list_objects(&db, &owner, "INDEX").unwrap();
+    let ix = idx
+        .iter()
+        .find(|e| e.name == "ORA_IDE_B_IX")
+        .expect("index listed");
+    assert_eq!(ix.parent.as_deref(), Some("ORA_IDE_B"));
+    assert!(ix.ok);
+    let trg = list_objects(&db, &owner, "TRIGGER").unwrap();
+    assert_eq!(
+        trg.iter()
+            .find(|e| e.name == "ORA_IDE_B_TRG")
+            .unwrap()
+            .parent
+            .as_deref(),
+        Some("ORA_IDE_B")
+    );
+    assert!(list_objects(&db, &owner, "SEQUENCE")
+        .unwrap()
+        .iter()
+        .any(|e| e.name == "ORA_IDE_B_SEQ"));
+    assert!(
+        list_objects(&db, &owner, "SEQUENCE")
+            .unwrap()
+            .iter()
+            .all(|e| !e.name.starts_with("ISEQ$$")),
+        "identity helpers hidden"
+    );
+
+    let src = object_source(&db, &owner, "ORA_IDE_B_PROC", "PROCEDURE").unwrap();
+    assert!(
+        src.to_lowercase().contains("insert into ora_ide_b"),
+        "{src}"
+    );
+    let ddl = object_ddl(&db, &owner, "ORA_IDE_B", "TABLE").unwrap();
+    assert!(ddl.to_uppercase().contains("CREATE TABLE"), "{ddl}");
+    let seq = sequence_info(&db, &owner, "ORA_IDE_B_SEQ")
+        .unwrap()
+        .expect("sequence info");
+    assert_eq!(seq.increment, "1");
+
+    let d = dependencies(&db, &owner, "ORA_IDE_B_SEQ").unwrap();
+    assert!(
+        d.used_by
+            .iter()
+            .any(|x| x.name == "ORA_IDE_B_TRG" && x.object_type == "TRIGGER"),
+        "{d:?}"
+    );
+    let d = dependencies(&db, &owner, "ORA_IDE_B_PROC").unwrap();
+    assert!(d.uses.iter().any(|x| x.name == "ORA_IDE_B"), "{d:?}");
+
+    for s in [
+        "drop table ora_ide_b purge",
+        "drop sequence ora_ide_b_seq",
+        "drop procedure ora_ide_b_proc",
+    ] {
+        drop_quietly(&db, s);
+    }
+}
