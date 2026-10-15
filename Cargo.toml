@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/ora-core"]
+# The desktop shell needs system GUI libraries; build it explicitly with
+# `cargo build --manifest-path app/src-tauri/Cargo.toml`.
+exclude = ["app/src-tauri"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
