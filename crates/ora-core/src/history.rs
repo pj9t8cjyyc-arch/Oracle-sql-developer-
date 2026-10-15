@@ -22,6 +22,10 @@ use crate::{Error, Result};
 const SCHEMA_VERSION: i64 = 1;
 
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS kb_snapshots(
+  conn_key TEXT NOT NULL, owner TEXT NOT NULL, taken_at INTEGER NOT NULL, json TEXT NOT NULL,
+  PRIMARY KEY(conn_key, owner)
+);
 CREATE TABLE IF NOT EXISTS sql_texts(
   id INTEGER PRIMARY KEY,
   hash TEXT NOT NULL UNIQUE,
@@ -276,6 +280,35 @@ impl HistoryStore {
         conn.execute_batch(SCHEMA)?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(Self { conn })
+    }
+
+    // ------------------------------------------------------------ knowledge base snapshots
+
+    /// Keeps the latest knowledge-base snapshot per database and schema (replaces the previous one).
+    pub fn kb_save(
+        &mut self,
+        conn_key: &str,
+        owner: &str,
+        taken_at: i64,
+        json: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO kb_snapshots(conn_key, owner, taken_at, json) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(conn_key, owner) DO UPDATE SET taken_at = excluded.taken_at, json = excluded.json",
+            params![conn_key, owner.to_uppercase(), taken_at, json],
+        )?;
+        Ok(())
+    }
+
+    pub fn kb_load(&self, conn_key: &str, owner: &str) -> Result<Option<(i64, String)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT taken_at, json FROM kb_snapshots WHERE conn_key = ?1 AND owner = ?2",
+                params![conn_key, owner.to_uppercase()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
     }
 
     // ------------------------------------------------------------ executions
@@ -1349,5 +1382,19 @@ mod tests {
         assert!(!hits.is_empty());
         assert!(ms < 500, "search over 20k executions took {ms} ms");
         println!("20k executions: search in {ms} ms, {} hits", hits.len());
+    }
+
+    #[test]
+    fn knowledge_snapshots_are_kept_per_database_and_schema_and_replaced() {
+        let mut h = HistoryStore::in_memory().unwrap();
+        assert!(h.kb_load("u@h/s", "HR").unwrap().is_none());
+        h.kb_save("u@h/s", "hr", 1, "{\"a\":1}").unwrap();
+        h.kb_save("u@h/s", "HR", 2, "{\"a\":2}").unwrap();
+        h.kb_save("other@h/s", "HR", 3, "{}").unwrap();
+        assert_eq!(
+            h.kb_load("u@h/s", "HR").unwrap(),
+            Some((2, "{\"a\":2}".to_string()))
+        );
+        assert_eq!(h.kb_load("other@h/s", "hr").unwrap().unwrap().0, 3);
     }
 }

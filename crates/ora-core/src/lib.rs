@@ -6,6 +6,7 @@ pub mod catalog;
 pub mod comments;
 pub mod complete;
 pub mod db;
+pub mod dossier;
 pub mod error;
 pub mod export;
 pub mod fake;
@@ -14,6 +15,7 @@ pub mod guard;
 pub mod history;
 pub mod import;
 pub mod insight;
+pub mod knowledge;
 pub mod lexer;
 pub mod meta;
 #[cfg(feature = "oracle")]

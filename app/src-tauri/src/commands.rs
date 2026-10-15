@@ -46,6 +46,8 @@ pub struct AppState {
     /// Package analyses and dependency graphs per `connection|SCHEMA`; rebuilt on request.
     analyses: Mutex<HashMap<String, Arc<ora_core::packages::PackageAnalysis>>>,
     graphs: Mutex<HashMap<String, Arc<ora_core::graph::Graph>>>,
+    /// Knowledge-base snapshots per `connection|SCHEMA`; the latest is also kept in the local SQLite file.
+    kbs: Mutex<HashMap<String, Arc<ora_core::knowledge::Knowledge>>>,
 }
 
 impl AppState {
@@ -63,6 +65,7 @@ impl AppState {
             profiles: Mutex::default(),
             analyses: Mutex::default(),
             graphs: Mutex::default(),
+            kbs: Mutex::default(),
         }
     }
 }
@@ -795,4 +798,164 @@ pub async fn graph_focus(
         .await?
         .focus(&focus)
         .ok_or_else(|| "that object is not in the graph".to_string())
+}
+
+// ------------------------------------------------------------ knowledge base + markdown export
+
+/// Reads the whole schema (objects, columns, keys, indexes, triggers, packages, jobs, grants) into a
+/// linked knowledge base with evidence, stores it in the local SQLite file and makes the graph use it.
+#[tauri::command]
+pub async fn kb_build(
+    state: State<'_, AppState>,
+    conn: String,
+    owner: String,
+) -> CmdResult<ora_core::knowledge::KbSummary> {
+    let c = current(&state, &conn)?;
+    let db = c.db.clone();
+    let o = owner.clone();
+    let kb =
+        blocking(move || ora_core::knowledge::collect_schema(db.as_ref(), &o, now_ms())).await?;
+    let json = serde_json::to_string(&kb).map_err(|e| e.to_string())?;
+    history(&state, |h| h.kb_save(&c.key, &owner, kb.taken_at, &json))?;
+    let key = cache_key(&conn, &owner);
+    let summary = kb.summary();
+    state
+        .graphs
+        .lock()
+        .unwrap()
+        .insert(key.clone(), Arc::new(kb.graph()));
+    state.kbs.lock().unwrap().insert(key, Arc::new(kb));
+    Ok(summary)
+}
+
+fn kb_for(
+    state: &State<'_, AppState>,
+    conn: &str,
+    owner: &str,
+) -> CmdResult<Option<Arc<ora_core::knowledge::Knowledge>>> {
+    let key = cache_key(conn, owner);
+    if let Some(k) = state.kbs.lock().unwrap().get(&key) {
+        return Ok(Some(k.clone()));
+    }
+    let c = current(state, conn)?;
+    let Some((_, json)) = history(state, |h| h.kb_load(&c.key, owner))? else {
+        return Ok(None);
+    };
+    let kb: ora_core::knowledge::Knowledge =
+        serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    let kb = Arc::new(kb);
+    state
+        .graphs
+        .lock()
+        .unwrap()
+        .insert(key.clone(), Arc::new(kb.graph()));
+    state.kbs.lock().unwrap().insert(key, kb.clone());
+    Ok(Some(kb))
+}
+
+#[tauri::command]
+pub async fn kb_status(
+    state: State<'_, AppState>,
+    conn: String,
+    owner: String,
+) -> CmdResult<Option<ora_core::knowledge::KbSummary>> {
+    Ok(kb_for(&state, &conn, &owner)?.map(|k| k.summary()))
+}
+
+#[derive(serde::Serialize)]
+pub struct KbPreview {
+    markdown: String,
+    files: Vec<String>,
+    tokens_estimate: usize,
+    truncated: bool,
+    missing: Vec<String>,
+    /// The preview text was cut (the export is complete).
+    preview_cut: bool,
+}
+
+/// Source and DDL are read on a second session so a long export never blocks a worksheet.
+fn build_bundle(
+    state: &State<'_, AppState>,
+    conn: &str,
+    owner: &str,
+    options: ora_core::dossier::DossierOptions,
+) -> CmdResult<impl FnOnce() -> ora_core::Result<ora_core::dossier::Bundle> + Send + 'static> {
+    let kb = kb_for(state, conn, owner)?
+        .ok_or_else(|| "Build the knowledge base for this schema first.".to_string())?;
+    let c = current(state, conn)?;
+    Ok(move || {
+        let db = (c.opener)().unwrap_or_else(|_| c.db.clone());
+        ora_core::dossier::build(&kb, &ora_core::dossier::DbFetch(db.as_ref()), &options)
+    })
+}
+
+#[tauri::command]
+pub async fn kb_preview(
+    state: State<'_, AppState>,
+    conn: String,
+    owner: String,
+    options: ora_core::dossier::DossierOptions,
+) -> CmdResult<KbPreview> {
+    let job = build_bundle(&state, &conn, &owner, options)?;
+    let b = blocking(job).await?;
+    const CAP: usize = 300_000;
+    let md = b.combined();
+    let cut = md.len() > CAP;
+    let markdown = if cut {
+        let mut end = CAP;
+        while !md.is_char_boundary(end) {
+            end -= 1;
+        }
+        md[..end].to_string()
+    } else {
+        md
+    };
+    Ok(KbPreview {
+        markdown,
+        files: b.files.iter().map(|f| f.path.clone()).collect(),
+        tokens_estimate: b.tokens_estimate,
+        truncated: b.truncated,
+        missing: b.missing,
+        preview_cut: cut,
+    })
+}
+
+#[derive(serde::Serialize)]
+pub struct KbExported {
+    path: String,
+    bytes: u64,
+    files: usize,
+    tokens_estimate: usize,
+}
+
+/// Writes one `.md` file, or a `.zip` with one file per object, an index, `graph.json` and `manifest.json`.
+#[tauri::command]
+pub async fn kb_export(
+    state: State<'_, AppState>,
+    conn: String,
+    owner: String,
+    options: ora_core::dossier::DossierOptions,
+    path: String,
+    zip: bool,
+) -> CmdResult<KbExported> {
+    let job = build_bundle(&state, &conn, &owner, options)?;
+    blocking(move || {
+        let b = job()?;
+        let bytes = {
+            let p = std::path::Path::new(&path);
+            if zip {
+                b.write_zip(p)?;
+            } else {
+                b.write_combined(p)?;
+            }
+            std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)
+        };
+        Ok(KbExported {
+            path,
+            bytes,
+            files: b.files.len(),
+            tokens_estimate: b.tokens_estimate,
+        })
+    })
+    .await
 }

@@ -23,3 +23,4 @@ flate2 = "1.1.10"
 rust_xlsxwriter = { version = "0.99.1", features = ["constant_memory"] }
 calamine = { version = "0.36.1", features = ["dates"] }
 chrono = "0.4.45"
+zip = { version = "9.0.3", default-features = false, features = ["deflate"] }

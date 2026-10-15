@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::db::{collect, Database, Row};
 use crate::lexer::{lex, Tok, Token};
@@ -50,13 +50,21 @@ pub struct Inputs {
     pub bodies: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MemberRef {
     pub package: String,
     pub member: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// A place in a package body where a table is touched (1-based line in the body source).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TableLine {
+    pub table: String,
+    pub write: bool,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Member {
     pub name: String,
     /// `PROCEDURE` or `FUNCTION`.
@@ -74,16 +82,22 @@ pub struct Member {
     pub internal_refs: usize,
     /// `used`, `unreferenced` (public, nothing found calls it) or `unused_private`.
     pub status: String,
+    /// Lines of the package body this member occupies (0 when not found / wrapped).
+    pub line_start: usize,
+    pub line_end: usize,
+    pub table_lines: Vec<TableLine>,
+    /// Lines using `EXECUTE IMMEDIATE` or `DBMS_SQL`: what they touch cannot be known statically.
+    pub dynamic_sql_lines: Vec<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TableUse {
     pub table: String,
     pub read: bool,
     pub write: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageDetail {
     pub name: String,
     pub spec_status: String,
@@ -98,7 +112,7 @@ pub struct PackageDetail {
     pub unused_private: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageAnalysis {
     pub owner: String,
     pub packages: Vec<PackageDetail>,
@@ -289,6 +303,13 @@ struct Scan {
     reads: BTreeSet<String>,
     writes: BTreeSet<String>,
     internal: HashMap<String, usize>,
+    table_lines: BTreeSet<TableLine>,
+    dynamic: BTreeSet<usize>,
+}
+
+/// 1-based line of a char offset, given the char offsets at which lines start.
+fn line_of(line_starts: &[usize], off: usize) -> usize {
+    line_starts.partition_point(|&s| s <= off).max(1)
 }
 
 fn prev_word(toks: &[Token], j: usize, n: usize) -> Option<&str> {
@@ -311,6 +332,7 @@ fn scan_span(
     tables: &HashSet<String>,
     own_members: &HashSet<String>,
     skip: usize,
+    ls: &[usize],
 ) -> Scan {
     let mut sc = Scan::default();
     let tk = |k: usize| toks.get(k).map(|t| &t.tok);
@@ -320,6 +342,11 @@ fn scan_span(
             j += 1;
             continue;
         };
+        if (w == "EXECUTE" && matches!(tk(j + 1), Some(Tok::Word(n)) if n == "IMMEDIATE"))
+            || w == "DBMS_SQL"
+        {
+            sc.dynamic.insert(line_of(ls, toks[j].start));
+        }
         let after_dot = j > 0 && matches!(toks[j - 1].tok, Tok::Punct('.'));
         let mut consumed = 1;
         if !after_dot && j != skip {
@@ -342,7 +369,7 @@ fn scan_span(
             if consumed == 1 && w == owner && matches!(tk(j + 1), Some(Tok::Punct('.'))) {
                 if let Some(t) = toks.get(j + 2).and_then(word) {
                     if tables.contains(&t.to_uppercase()) {
-                        classify(&mut sc, &t.to_uppercase(), toks, j);
+                        classify(&mut sc, &t.to_uppercase(), toks, j, ls);
                         consumed = 3;
                     }
                 }
@@ -360,7 +387,7 @@ fn scan_span(
                         consumed = 3;
                     }
                 } else if tables.contains(&w) {
-                    classify(&mut sc, &w, toks, j);
+                    classify(&mut sc, &w, toks, j, ls);
                     consumed = 3;
                 }
             }
@@ -372,7 +399,7 @@ fn scan_span(
                     Some("FROM" | "JOIN" | "INTO" | "UPDATE" | "USING" | "TABLE")
                 )
             {
-                classify(&mut sc, &w, toks, j);
+                classify(&mut sc, &w, toks, j, ls);
             }
             // Bare call to a member of this package.
             if consumed == 1
@@ -391,7 +418,7 @@ fn scan_span(
     sc
 }
 
-fn classify(sc: &mut Scan, table: &str, toks: &[Token], j: usize) {
+fn classify(sc: &mut Scan, table: &str, toks: &[Token], j: usize, ls: &[usize]) {
     // `j` is the first token of the table reference (a schema prefix counts as part of it).
     let write = match (prev_word(toks, j, 1), prev_word(toks, j, 2)) {
         (Some("INTO"), Some("INSERT" | "MERGE")) => true,
@@ -400,6 +427,11 @@ fn classify(sc: &mut Scan, table: &str, toks: &[Token], j: usize) {
         (Some("INTO"), None) => false,
         _ => false,
     };
+    sc.table_lines.insert(TableLine {
+        table: table.to_string(),
+        write,
+        line: line_of(ls, toks[j].start),
+    });
     if write {
         sc.writes.insert(table.to_string());
     } else {
@@ -445,12 +477,25 @@ pub fn analyze(inp: &Inputs) -> PackageAnalysis {
                 called_by: vec![],
                 internal_refs: 0,
                 status: String::new(),
+                line_start: 0,
+                line_end: 0,
+                table_lines: vec![],
+                dynamic_sql_lines: vec![],
             });
         }
         let mut scans: Vec<Scan> = members.iter().map(|_| Scan::default()).collect();
         if !wrapped && !body.is_empty() {
             let chars: Vec<char> = body.chars().collect();
             let toks = lex(body);
+            let line_starts: Vec<usize> = std::iter::once(0)
+                .chain(
+                    chars
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, c)| **c == '\n')
+                        .map(|(i, _)| i + 1),
+                )
+                .collect();
             let found = member_starts(&toks, &chars);
             // Private members: defined in the body, not declared in the spec.
             let public: HashSet<String> = members.iter().map(|m| m.name.clone()).collect();
@@ -468,6 +513,10 @@ pub fn analyze(inp: &Inputs) -> PackageAnalysis {
                         called_by: vec![],
                         internal_refs: 0,
                         status: String::new(),
+                        line_start: 0,
+                        line_end: 0,
+                        table_lines: vec![],
+                        dynamic_sql_lines: vec![],
                     });
                     scans.push(Scan::default());
                 }
@@ -485,9 +534,22 @@ pub fn analyze(inp: &Inputs) -> PackageAnalysis {
                     &tables,
                     &own,
                     f.start + 1,
+                    &line_starts,
                 );
                 if let Some(idx) = members.iter().position(|m| m.name == f.name) {
+                    let first = toks[f.start].start;
+                    let last = toks[end.saturating_sub(1).max(f.start)]
+                        .end
+                        .saturating_sub(1);
+                    let (a, z) = (line_of(&line_starts, first), line_of(&line_starts, last));
+                    let m = &mut members[idx];
+                    if m.line_start == 0 || z - a >= m.line_end - m.line_start {
+                        m.line_start = a;
+                        m.line_end = z;
+                    }
                     let t = &mut scans[idx];
+                    t.table_lines.extend(sc.table_lines);
+                    t.dynamic.extend(sc.dynamic);
                     t.calls.extend(sc.calls);
                     t.reads.extend(sc.reads);
                     t.writes.extend(sc.writes);
@@ -556,6 +618,8 @@ pub fn analyze(inp: &Inputs) -> PackageAnalysis {
             }
             m.reads = sc.reads.iter().cloned().collect();
             m.writes = sc.writes.iter().cloned().collect();
+            m.table_lines = sc.table_lines.iter().cloned().collect();
+            m.dynamic_sql_lines = sc.dynamic.iter().copied().collect();
             for t in &sc.reads {
                 tabs.entry(t.clone()).or_default().0 = true;
             }
@@ -834,6 +898,38 @@ END util_pkg;"
         assert_eq!(p.members[0].writes, vec!["T"]);
         assert_eq!(p.members[0].signature, "GO");
         assert_eq!(p.body_lines, 3);
+    }
+
+    #[test]
+    fn members_know_their_lines_table_lines_and_dynamic_sql() {
+        let mut inp = Inputs {
+            owner: "HR".into(),
+            ..Default::default()
+        };
+        inp.packages.push(PkgMeta {
+            name: "P".into(),
+            spec_status: "VALID".into(),
+            body_status: Some("VALID".into()),
+        });
+        inp.procs.push(ProcRow {
+            pkg: "P".into(),
+            name: "A".into(),
+            overload: None,
+        });
+        inp.tables.push("T".into());
+        inp.bodies.insert("P".into(), "PACKAGE BODY p IS\n  PROCEDURE a IS BEGIN\n    UPDATE t SET x = 1;\n    EXECUTE IMMEDIATE 'x';\n  END a;\nEND p;\n".into());
+        let a = analyze(&inp);
+        let m = &a.packages[0].members[0];
+        assert_eq!((m.line_start, m.line_end), (2, 6));
+        assert_eq!(
+            m.table_lines,
+            vec![TableLine {
+                table: "T".into(),
+                write: true,
+                line: 3
+            }]
+        );
+        assert_eq!(m.dynamic_sql_lines, vec![4]);
     }
 
     /// 400 packages x 40 members x ~15 lines, as in a large schema. Run with

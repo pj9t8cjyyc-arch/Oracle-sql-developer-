@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Api } from "../api";
 import { errText, useAsync } from "../hooks";
+import { Icon } from "../ui-icons";
 import type { Direction, GNode, SNode, Subgraph } from "../types";
+import { KnowledgeDialog } from "./KnowledgeDialog";
 
 const KIND_COLOR: Record<string, string> = {
   TABLE: "#2f6bed", VIEW: "#1b8f78", "MATERIALIZED VIEW": "#1b8f78", PACKAGE: "#7c5cd6", PROCEDURE: "#9a6bd6", FUNCTION: "#9a6bd6",
-  TRIGGER: "#e0701f", SEQUENCE: "#d6336c", TYPE: "#7b8696", SYNONYM: "#7b8696",
+  TRIGGER: "#e0701f", SEQUENCE: "#d6336c", TYPE: "#7b8696", SYNONYM: "#7b8696", INDEX: "#1b8f78", JOB: "#b7670a",
 };
-const KINDS = ["TABLE", "VIEW", "PACKAGE", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE", "TYPE", "SYNONYM"];
+const KINDS = ["TABLE", "VIEW", "PACKAGE", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE", "INDEX", "JOB", "TYPE", "SYNONYM"];
 const COLW = 250, ROWH = 46, BOXW = 196, BOXH = 32, PAD = 24;
 const DIRS: [Direction, string][] = [["uses", "What it uses"], ["used_by", "What uses it"], ["both", "Both"]];
 
@@ -25,6 +27,7 @@ export function GraphPage({ api, conn, owner, focus: focusReq, onOpen, onError }
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<GNode[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [kbOpen, setKbOpen] = useState(false);
   const seq = useRef(0);
 
   useEffect(() => { if (focusReq) setFocus(focusReq); }, [focusReq]);
@@ -85,6 +88,7 @@ export function GraphPage({ api, conn, owner, focus: focusReq, onOpen, onError }
         </div>
         <label className="inline small">Hops
           <select value={hops} onChange={(e) => setHops(Number(e.target.value))} aria-label="Hops">{[1, 2, 3, 4, 5, 6].map((n) => <option key={n}>{n}</option>)}</select></label>
+        <button disabled={!focus} onClick={() => setKbOpen(true)} title="Download this object and what it links to as markdown"><Icon name="download" size={14} /> Knowledge .md</button>
         <div className="gr-kinds" aria-label="Show only">
           {KINDS.filter((k) => !info.data || info.data.kinds[k]).map((k) => (
             <button key={k} className={`chipbtn ${kinds.includes(k) ? "on" : ""}`} aria-pressed={kinds.includes(k)} onClick={() => toggleKind(k)}>
@@ -94,11 +98,12 @@ export function GraphPage({ api, conn, owner, focus: focusReq, onOpen, onError }
         </div>
       </div>
 
-      {info.data && <div className="gr-meta muted small">{owner}: {info.data.nodes} objects, {info.data.edges} links. Arrows point from the object that uses to the object it uses; dashed = foreign key.
+      {info.data && <div className="gr-meta muted small">{owner}: {info.data.nodes} objects, {info.data.edges} links. Arrows point from the object that uses to the object it uses; dashed = foreign key, dotted = index, orange = writes.
         {" "}Click an object to re-centre, double-click to open it. {kinds.length > 0 && "Hidden kinds are not followed."}</div>}
       {err && <div className="error pad" role="alert">{err}</div>}
       {sub?.truncated && <div className="warn-box small">Showing the first {sub.nodes.length} objects. Lower the hop count or filter by kind to see the rest.</div>}
 
+      {kbOpen && focus && <KnowledgeDialog api={api} conn={conn} owner={owner} focus={focus} label={focusNode ? `${focusNode.owner}.${focusNode.name}` : focus} onClose={() => setKbOpen(false)} onError={onError} />}
       <div className="gr-canvas">
         {!focus && <div className="muted pad">Choose an object above to see what it uses and what uses it. Try a table to answer "what breaks if I change this?".</div>}
         {sub && layout && (
@@ -117,7 +122,7 @@ export function GraphPage({ api, conn, owner, focus: focusReq, onOpen, onError }
                 ? `M${a.x} ${y1} C${a.x - 50} ${y1}, ${a.x - 50} ${y2}, ${b.x} ${y2}`
                 : `M${x1} ${y1} C${(x1 + x2) / 2} ${y1}, ${(x1 + x2) / 2} ${y2}, ${x2} ${y2}`;
               const touches = e.from === sub.focus || e.to === sub.focus;
-              return <path key={i} d={d} fill="none" stroke={touches ? "var(--accent)" : "var(--line-strong)"} strokeWidth={touches ? 1.6 : 1.1} strokeDasharray={e.kind === "fk" ? "5 4" : undefined} markerEnd="url(#arr)" />;
+              return <path key={i} d={d} fill="none" stroke={touches ? "var(--accent)" : e.kind === "writes" ? "var(--warn)" : "var(--line-strong)"} strokeWidth={touches || e.kind === "writes" ? 1.6 : 1.1} strokeDasharray={e.kind === "fk" ? "5 4" : e.kind === "indexes" ? "2 3" : undefined} markerEnd="url(#arr)"><title>{e.kind}</title></path>;
             })}
             {sub.nodes.map((n) => {
               const p = layout.pos.get(n.id)!;

@@ -1,7 +1,7 @@
 // Demo-only stand-in for the Rust package analysis and graph (ora-core `packages` / `graph`),
 // so the UI can be built and checked in a browser. The real logic and its tests live in ora-core.
 import type { Api } from "./api";
-import type { GEdge, GNode, GraphFocus, MemberRef, PackageAnalysis, PackageDetail, PkgMember, SNode, Subgraph, TableUse } from "./types";
+import type { DossierOptions, GEdge, GNode, GraphFocus, KbSummary, MemberRef, PackageAnalysis, PackageDetail, PkgMember, SNode, Subgraph, TableUse } from "./types";
 
 type M = { n: string; sig: string; fn?: boolean; pub?: boolean; reads?: string[]; writes?: string[]; calls?: string[]; internal?: number };
 const SPEC: Record<string, { wrapped?: boolean; invalid?: boolean; lines: number; members: M[] }> = {
@@ -85,11 +85,43 @@ function buildGraph() {
   return { nodes, edges };
 }
 
-export function graphApi(): Pick<Api, "packageAnalysis" | "graphInfo" | "graphSearch" | "graphFocus"> {
+export function graphApi(): Pick<Api, "packageAnalysis" | "graphInfo" | "graphSearch" | "graphFocus" | "kbBuild" | "kbStatus" | "kbPreview" | "kbExport"> {
   const g = buildGraph();
   const analysis = build();
+  let built: KbSummary | null = null;
+  const summary = (owner: string): KbSummary => ({
+    owner, taken_at: Date.now(), tables: 6, views: 1, packages: analysis.packages.length, members: analysis.packages.reduce((n, p) => n + p.members.length, 0), triggers: 3, indexes: 6, sequences: 3,
+    nodes: g.nodes.size, edges: g.edges.length, exact_links: g.edges.length, heuristic_links: 14,
+    coverage: { packages: analysis.packages.length, packages_scanned: analysis.packages.length - 1, packages_wrapped: 1, members: 14, dynamic_sql_sites: 0, gaps: [
+      { severity: "warning", area: "packages", message: "1 wrapped package(s) cannot be read, so what they call, read or write is unknown: LEGACY_PKG." },
+      { severity: "warning", area: "invalid objects", message: "2 object(s) are INVALID, so their dependencies may be stale: view EMP_DETAILS_VIEW, package AUDIT_PKG." },
+      { severity: "info", area: "package calls", message: "Reads, writes and calls inside packages come from a text scan (heuristic). PL/Scope is not used yet." },
+      { severity: "info", area: "callers", message: "0 object(s) in other schemas use this schema (shown). Applications and external callers are not visible to the database." },
+    ] },
+  });
+  const dossier = (o: DossierOptions): { md: string; files: string[] } => {
+    const n = g.nodes.get(o.focus);
+    if (!n) throw "that object is not in the knowledge base";
+    const rel = g.edges.filter((e) => e.from === o.focus || e.to === o.focus);
+    const line = (e: GEdge) => { const other = g.nodes.get(e.from === o.focus ? e.to : e.from)!; return `- ${other.owner}.${other.name} (${other.kind.toLowerCase()}, ${e.kind}) [${e.kind === "reads" || e.kind === "writes" || e.kind === "calls" ? "scan, heuristic" : "dictionary, exact"}]`; };
+    const pk = analysis.packages.find((p) => n.kind === "PACKAGE" && p.name === n.name);
+    const members = pk ? `\n## Members\n\n| Member | Scope | Reads | Writes | Calls | Status |\n|---|---|---|---|---|---|\n${pk.members.map((m) => `| \`${m.signature}\` | ${m.public ? "public" : "private"} | ${m.reads.join(", ")} | ${m.writes.join(", ")} | ${m.calls.map((c) => `${c.package}.${c.member}`).join(", ")} | ${m.status} |`).join("\n")}\n` : "";
+    const md = `<!-- file: README.md -->\n---\ntype: ora-ide-knowledge-export\nfocus: "${o.focus}"\nowner: ${n.owner}\ndirection: ${o.direction}\nhops: ${o.hops}\n---\n\n# Knowledge export: ${n.owner}.${n.name} (${n.kind.toLowerCase()})\n\n> Demo data. The real export also contains columns, keys, indexes, trigger source, DDL and the package code that touches the object.\n\n## What this export cannot tell you\n\n${summary(n.owner).coverage.gaps.map((x) => `- **${x.area}** (${x.severity}): ${x.message}`).join("\n")}\n\n<!-- file: objects/${n.kind.toLowerCase()}/${n.owner}.${n.name}.md -->\n---\nid: "${n.id}"\nkind: ${n.kind.toLowerCase()}\n---\n\n# ${n.owner}.${n.name} (${n.kind.toLowerCase()})\n\n## Links\n\n${rel.map(line).join("\n") || "- none"}\n${members}`;
+    return { md, files: ["README.md", `objects/${n.kind.toLowerCase()}/${n.owner}.${n.name}.md`, "graph.json", "manifest.json"] };
+  };
   const empty = (owner: string): PackageAnalysis => ({ owner, packages: [], wrapped: 0, invalid: 0 });
   return {
+    kbBuild: async (_c, owner) => { await new Promise((r) => setTimeout(r, 400)); built = summary(owner); return built; },
+    kbStatus: async () => built,
+    kbPreview: async (_c, _o, o) => { const d = dossier(o); return { markdown: d.md, files: d.files, tokens_estimate: Math.round(d.md.length / 4), truncated: false, missing: o.include_source ? ["demo: source text is not available in demo mode"] : [], preview_cut: false }; },
+    kbExport: async (_c, _o, o, path, zip) => {
+      const d = dossier(o);
+      const blob = new Blob([d.md], { type: "text/markdown" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = path.split("/").pop()!.replace(/\.zip$/, ".md"); a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      return { path, bytes: blob.size, files: zip ? d.files.length : 1, tokens_estimate: Math.round(d.md.length / 4) };
+    },
     packageAnalysis: async (_c, owner) => { await new Promise((r) => setTimeout(r, 120)); return owner === "HR" ? analysis : empty(owner); },
     graphInfo: async (_c, owner) => {
       const kinds: Record<string, number> = {};

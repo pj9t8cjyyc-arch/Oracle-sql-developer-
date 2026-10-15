@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::db::{collect, Database, Row};
 use crate::Result;
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GNode {
     /// `KIND:OWNER.NAME`
     pub id: String,
@@ -21,11 +21,11 @@ pub struct GNode {
     pub kind: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GEdge {
     pub from: String,
     pub to: String,
-    /// `uses` (ALL_DEPENDENCIES) or `fk` (foreign key, child -> parent).
+    /// `uses` (dictionary dependency), `fk` (child -> parent), `indexes` (index -> table), `reads`, `writes`, `calls` (package scan), `runs` (job -> program).
     pub kind: String,
 }
 
@@ -133,6 +133,19 @@ impl Graph {
                 kind: kind.to_string(),
             });
         }
+    }
+
+    /// Rebuilds a graph from stored nodes and edges.
+    pub fn from_parts(owner: &str, nodes: &[GNode], edges: &[GEdge]) -> Self {
+        let mut g = Self::new(owner);
+        for n in nodes {
+            g.nodes.insert(n.id.clone(), n.clone());
+        }
+        for e in edges {
+            g.add_edge(&e.from, &e.to, &e.kind);
+        }
+        g.finish();
+        g
     }
 
     /// Builds the adjacency lists; call once after loading.

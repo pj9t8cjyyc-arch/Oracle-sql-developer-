@@ -8,6 +8,7 @@ import { CodeView } from "./CodeView";
 import { ColumnFocus, CommentEditor } from "./ColumnFocus";
 import { ExportDialog } from "./ExportDialog";
 import { ImportWizard } from "./ImportWizard";
+import { KnowledgeDialog } from "./KnowledgeDialog";
 import { ConstraintRows, Empty, IndexRows, ReferencedByRows, SequenceRows, TriggerRows, type OpenFn } from "./Related";
 import { ResultGrid } from "./ResultGrid";
 
@@ -26,7 +27,7 @@ interface PageProps {
   onGraph?(): void; onPackages?(): void;
 }
 
-const LinkCtx = createContext<{ graph?(): void; packages?(): void }>({});
+const LinkCtx = createContext<{ graph?(): void; packages?(): void; knowledge?(): void }>({});
 
 const toKind = (t: string): ObjectKind | null => {
   const k = t.replace(" BODY", "") as ObjectKind;
@@ -61,6 +62,7 @@ function Header({ target, conn, status, children }: { target: ObjTarget; conn: C
       <div className="obj-actions">
         {children}
         {target.kind === "PACKAGE" && links.packages && <button onClick={links.packages} title="Members, callers and tables used"><Icon name="package" size={14} /> Members &amp; usage</button>}
+        {target.kind !== "INDEX" && links.knowledge && <button onClick={links.knowledge} title="Download this object and everything linked to it as markdown (columns, indexes, triggers, packages, SQL)"><Icon name="download" size={14} /> Knowledge .md</button>}
         {target.kind !== "INDEX" && links.graph && <button onClick={links.graph} title="What it uses and what uses it"><Icon name="out" size={14} /> Graph</button>}
       </div>
     </header>
@@ -387,8 +389,11 @@ function SynonymView({ api, conn, target, onOpen }: PageProps) {
 
 export function ObjectPage(props: PageProps) {
   const { kind } = props.target;
+  const [kb, setKb] = useState(false);
+  const canKb = kind !== "INDEX";
   return (
-    <LinkCtx.Provider value={{ graph: props.onGraph, packages: props.onPackages }}>
+    <LinkCtx.Provider value={{ graph: props.onGraph, packages: props.onPackages, knowledge: canKb ? () => setKb(true) : undefined }}>
+      {kb && <KnowledgeDialog api={props.api} conn={props.conn.id} owner={props.target.owner} focus={`${kind}:${props.target.owner}.${props.target.name}`} label={`${props.target.owner}.${props.target.name}`} onClose={() => setKb(false)} onError={props.onError} />}
     <div className="object-page">
       {kind === "TABLE" || kind === "VIEW" || kind === "MATERIALIZED VIEW" ? <TableView {...props} />
         : kind === "INDEX" ? <IndexView {...props} />

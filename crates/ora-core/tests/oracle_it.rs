@@ -673,3 +673,116 @@ fn package_analysis_and_dependency_graph_match_a_known_schema() {
         drop_quietly(&db, &format!("DROP TABLE {t} PURGE"));
     }
 }
+
+#[test]
+#[ignore]
+fn knowledge_base_and_markdown_dossier_cover_a_known_schema() {
+    use ora_core::dossier::{build, DbFetch, DossierOptions};
+    use ora_core::graph::Direction;
+    let (db, p) = connect();
+    let owner = p.user.to_uppercase();
+    for sql in [
+        "DROP TRIGGER it_kb_bi",
+        "DROP PACKAGE it_kb_pkg",
+        "DROP SEQUENCE it_kb_seq",
+    ] {
+        drop_quietly(&db, sql);
+    }
+    for t in ["IT_KB_CHILD", "IT_KB_PARENT"] {
+        drop_quietly(&db, &format!("DROP TABLE {t} PURGE"));
+    }
+    exec(
+        &db,
+        "CREATE TABLE it_kb_parent (id NUMBER PRIMARY KEY, name VARCHAR2(30))",
+    );
+    exec(
+        &db,
+        "COMMENT ON TABLE it_kb_parent IS 'knowledge test parent'",
+    );
+    exec(&db, "CREATE TABLE it_kb_child (id NUMBER PRIMARY KEY, parent_id NUMBER REFERENCES it_kb_parent(id))");
+    exec(&db, "CREATE INDEX it_kb_child_ix ON it_kb_child(parent_id)");
+    exec(&db, "CREATE SEQUENCE it_kb_seq");
+    exec(&db, "CREATE OR REPLACE TRIGGER it_kb_bi BEFORE INSERT ON it_kb_parent FOR EACH ROW BEGIN :new.id := it_kb_seq.NEXTVAL; END;");
+    exec(&db, "CREATE OR REPLACE PACKAGE it_kb_pkg AS PROCEDURE add_child(p_parent NUMBER); END it_kb_pkg;");
+    exec(&db, "CREATE OR REPLACE PACKAGE BODY it_kb_pkg AS\n  PROCEDURE add_child(p_parent NUMBER) IS\n  BEGIN\n    INSERT INTO it_kb_child(id, parent_id) VALUES (1, p_parent);\n  END;\nEND it_kb_pkg;");
+
+    let kb = ora_core::knowledge::collect_schema(&db, &owner, 0).unwrap();
+    let parent = kb.table("IT_KB_PARENT").expect("parent table");
+    assert_eq!(parent.comment.as_deref(), Some("knowledge test parent"));
+    assert_eq!(parent.columns.len(), 2);
+    let child = kb.table("IT_KB_CHILD").expect("child table");
+    assert!(child
+        .constraints
+        .iter()
+        .any(|c| c.kind == "R"
+            && c.ref_table.as_deref() == Some(&format!("{owner}.IT_KB_PARENT")[..])));
+    assert!(child
+        .indexes
+        .iter()
+        .any(|i| i.name == "IT_KB_CHILD_IX" && i.columns == ["PARENT_ID"]));
+    assert!(kb
+        .triggers
+        .iter()
+        .any(|t| t.name == "IT_KB_BI" && t.table.as_deref() == Some("IT_KB_PARENT")));
+    let edge = |a: &str, b: &str| {
+        kb.edges
+            .iter()
+            .find(|e| e.from == a && e.to == b)
+            .map(|e| e.kind.as_str())
+    };
+    assert_eq!(
+        edge(
+            &format!("TABLE:{owner}.IT_KB_CHILD"),
+            &format!("TABLE:{owner}.IT_KB_PARENT")
+        ),
+        Some("fk")
+    );
+    assert_eq!(
+        edge(
+            &format!("PACKAGE:{owner}.IT_KB_PKG"),
+            &format!("TABLE:{owner}.IT_KB_CHILD")
+        ),
+        Some("writes")
+    );
+    assert_eq!(
+        edge(
+            &format!("INDEX:{owner}.IT_KB_CHILD_IX"),
+            &format!("TABLE:{owner}.IT_KB_CHILD")
+        ),
+        Some("indexes")
+    );
+
+    let b = build(
+        &kb,
+        &DbFetch(&db),
+        &DossierOptions {
+            focus: format!("TABLE:{owner}.IT_KB_CHILD"),
+            direction: Direction::Both,
+            hops: 2,
+            include_source: true,
+            max_member_lines: 0,
+            max_nodes: None,
+        },
+    )
+    .unwrap();
+    let md = b.combined();
+    assert!(
+        md.contains("IT_KB_CHILD_IX") && md.contains("INSERT INTO it_kb_child"),
+        "{md}"
+    );
+    assert!(
+        md.to_uppercase().contains("CREATE TABLE"),
+        "DDL from DBMS_METADATA"
+    );
+    assert!(b.missing.is_empty(), "{:?}", b.missing);
+    for sql in [
+        "DROP TRIGGER it_kb_bi",
+        "DROP PACKAGE it_kb_pkg",
+        "DROP SEQUENCE it_kb_seq",
+    ] {
+        drop_quietly(&db, sql);
+    }
+    for t in ["IT_KB_CHILD", "IT_KB_PARENT"] {
+        drop_quietly(&db, &format!("DROP TABLE {t} PURGE"));
+    }
+}
