@@ -9,6 +9,7 @@ pub mod db;
 pub mod error;
 pub mod export;
 pub mod fake;
+pub mod graph;
 pub mod guard;
 pub mod history;
 pub mod import;
@@ -17,6 +18,7 @@ pub mod lexer;
 pub mod meta;
 #[cfg(feature = "oracle")]
 pub mod oracle_backend;
+pub mod packages;
 pub mod parse;
 pub mod profile;
 pub mod schema;

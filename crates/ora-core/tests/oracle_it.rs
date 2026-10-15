@@ -604,3 +604,72 @@ fn import_loads_rows_with_explicit_formats_and_maps_oracle_rejects_to_file_rows(
     drop_quietly(&db, "drop table ora_ide_imp purge");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+#[ignore]
+fn package_analysis_and_dependency_graph_match_a_known_schema() {
+    let (db, p) = connect();
+    let owner = p.user.to_uppercase();
+    for t in ["IT_PK_T", "IT_PK_T2"] {
+        drop_quietly(&db, &format!("DROP TABLE {t} PURGE"));
+    }
+    drop_quietly(&db, "DROP PACKAGE it_pk_a");
+    drop_quietly(&db, "DROP PACKAGE it_pk_b");
+    exec(
+        &db,
+        "CREATE TABLE it_pk_t (id NUMBER PRIMARY KEY, v VARCHAR2(10))",
+    );
+    exec(
+        &db,
+        "CREATE TABLE it_pk_t2 (id NUMBER, t_id NUMBER REFERENCES it_pk_t(id))",
+    );
+    exec(&db, "CREATE OR REPLACE PACKAGE it_pk_b AS PROCEDURE ping(p_x IN NUMBER); FUNCTION cnt RETURN NUMBER; END it_pk_b;");
+    exec(&db, "CREATE OR REPLACE PACKAGE BODY it_pk_b AS PROCEDURE ping(p_x IN NUMBER) IS BEGIN DELETE FROM it_pk_t2 WHERE id = p_x; END; FUNCTION cnt RETURN NUMBER IS n NUMBER; BEGIN SELECT COUNT(*) INTO n FROM it_pk_t; RETURN n; END; END it_pk_b;");
+    exec(
+        &db,
+        "CREATE OR REPLACE PACKAGE it_pk_a AS PROCEDURE run_it; END it_pk_a;",
+    );
+    exec(&db, "CREATE OR REPLACE PACKAGE BODY it_pk_a AS PROCEDURE run_it IS BEGIN it_pk_b.ping(1); INSERT INTO it_pk_t(id) VALUES (1); END; END it_pk_a;");
+
+    let a = ora_core::packages::analyze_schema(&db, &owner).unwrap();
+    let pa = a
+        .packages
+        .iter()
+        .find(|x| x.name == "IT_PK_A")
+        .expect("IT_PK_A");
+    let pb = a
+        .packages
+        .iter()
+        .find(|x| x.name == "IT_PK_B")
+        .expect("IT_PK_B");
+    assert_eq!(pa.calls_packages, vec!["IT_PK_B"]);
+    assert_eq!(pb.called_by, vec!["IT_PK_A"]);
+    assert!(pa.tables.iter().any(|t| t.table == "IT_PK_T" && t.write));
+    let ping = pb.members.iter().find(|m| m.name == "PING").unwrap();
+    assert_eq!(ping.signature, "PING(P_X IN NUMBER)");
+    assert_eq!(ping.status, "used");
+    let cnt = pb.members.iter().find(|m| m.name == "CNT").unwrap();
+    assert_eq!(cnt.signature, "CNT RETURN NUMBER");
+    assert_eq!(cnt.status, "unreferenced");
+
+    let g = ora_core::graph::load(&db, &owner).unwrap();
+    let focus = ora_core::graph::Focus {
+        id: format!("TABLE:{owner}.IT_PK_T"),
+        direction: ora_core::graph::Direction::UsedBy,
+        hops: 2,
+        kinds: None,
+        max_nodes: None,
+    };
+    let s = g.focus(&focus).expect("table in graph");
+    let names: Vec<&str> = s.nodes.iter().map(|n| n.node.name.as_str()).collect();
+    assert!(names.contains(&"IT_PK_T2"), "foreign key child: {names:?}");
+    assert!(
+        names.contains(&"IT_PK_A") && names.contains(&"IT_PK_B"),
+        "packages: {names:?}"
+    );
+    drop_quietly(&db, "DROP PACKAGE it_pk_a");
+    drop_quietly(&db, "DROP PACKAGE it_pk_b");
+    for t in ["IT_PK_T2", "IT_PK_T"] {
+        drop_quietly(&db, &format!("DROP TABLE {t} PURGE"));
+    }
+}

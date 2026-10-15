@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { Api } from "../api";
 import { columnBadges, type InsightCache } from "../badges";
 import { useAsync } from "../hooks";
@@ -23,7 +23,10 @@ export interface ConnView { id: string; name: string; env: Environment; user: st
 interface PageProps {
   api: Api; conn: ConnView; target: ObjTarget; cache: InsightCache;
   onOpen: OpenFn; onWorksheet(sql: string): void; onError(e: unknown): void;
+  onGraph?(): void; onPackages?(): void;
 }
+
+const LinkCtx = createContext<{ graph?(): void; packages?(): void }>({});
 
 const toKind = (t: string): ObjectKind | null => {
   const k = t.replace(" BODY", "") as ObjectKind;
@@ -43,6 +46,7 @@ function Segmented<T extends string>({ tabs, value, onChange }: { tabs: [T, stri
 }
 
 function Header({ target, conn, status, children }: { target: ObjTarget; conn: ConnView; status?: { ok: boolean; text: string }; children?: React.ReactNode }) {
+  const links = useContext(LinkCtx);
   return (
     <header className="obj-head">
       <KindIcon kind={target.kind} size={22} />
@@ -54,7 +58,11 @@ function Header({ target, conn, status, children }: { target: ObjTarget; conn: C
           {status && <span className={`chip ${status.ok ? "ok" : "bad"}`}>{status.text.toLowerCase()}</span>}
         </div>
       </div>
-      <div className="obj-actions">{children}</div>
+      <div className="obj-actions">
+        {children}
+        {target.kind === "PACKAGE" && links.packages && <button onClick={links.packages} title="Members, callers and tables used"><Icon name="package" size={14} /> Members &amp; usage</button>}
+        {target.kind !== "INDEX" && links.graph && <button onClick={links.graph} title="What it uses and what uses it"><Icon name="out" size={14} /> Graph</button>}
+      </div>
     </header>
   );
 }
@@ -380,6 +388,7 @@ function SynonymView({ api, conn, target, onOpen }: PageProps) {
 export function ObjectPage(props: PageProps) {
   const { kind } = props.target;
   return (
+    <LinkCtx.Provider value={{ graph: props.onGraph, packages: props.onPackages }}>
     <div className="object-page">
       {kind === "TABLE" || kind === "VIEW" || kind === "MATERIALIZED VIEW" ? <TableView {...props} />
         : kind === "INDEX" ? <IndexView {...props} />
@@ -388,5 +397,6 @@ export function ObjectPage(props: PageProps) {
         : kind === "SYNONYM" ? <SynonymView {...props} />
         : <CodeObjectView {...props} />}
     </div>
+    </LinkCtx.Provider>
   );
 }

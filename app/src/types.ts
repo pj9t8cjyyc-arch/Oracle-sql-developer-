@@ -140,3 +140,25 @@ export interface ImportReport {
   read: number; inserted: number; rejected: number; committed: boolean; rolled_back: boolean; reject_file: string | null;
   stopped: string | null; cancelled: boolean; elapsed_ms: number; rows_per_sec: number; samples: Reject[];
 }
+
+// ---- package explorer + linkage graph
+export interface MemberRef { package: string; member: string }
+export interface PkgMember {
+  name: string; kind: "PROCEDURE" | "FUNCTION"; signature: string; overload: string | null; public: boolean;
+  calls: MemberRef[]; reads: string[]; writes: string[]; called_by: MemberRef[]; internal_refs: number;
+  status: "used" | "unreferenced" | "unused_private";
+}
+export interface TableUse { table: string; read: boolean; write: boolean }
+export interface PackageDetail {
+  name: string; spec_status: string; body_status: string | null; wrapped: boolean; body_lines: number; members: PkgMember[];
+  calls_packages: string[]; called_by: string[]; tables: TableUse[]; unreferenced: number; unused_private: number;
+}
+export interface PackageAnalysis { owner: string; packages: PackageDetail[]; wrapped: number; invalid: number }
+
+export interface GNode { id: string; owner: string; name: string; kind: string }
+export interface GEdge { from: string; to: string; kind: "uses" | "fk" }
+export interface GraphInfo { owner: string; nodes: number; edges: number; kinds: Record<string, number> }
+export type Direction = "uses" | "used_by" | "both";
+export interface GraphFocus { id: string; direction: Direction; hops: number; kinds: string[] | null; max_nodes?: number | null }
+export interface SNode extends GNode { depth: number; more: number }
+export interface Subgraph { focus: string; nodes: SNode[]; edges: GEdge[]; truncated: boolean }
