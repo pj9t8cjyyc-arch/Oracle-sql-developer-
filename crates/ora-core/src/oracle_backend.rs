@@ -65,6 +65,8 @@ impl OracleDb {
                 let r = c.connect().inspect(|conn| {
                     // Lets a DBA recognise these sessions in V$SESSION.
                     let _ = conn.set_module("Ora IDE");
+                    // Collect DBMS_OUTPUT so the IDE can show it; failing to enable is not fatal.
+                    let _ = conn.execute("begin dbms_output.enable(1000000); end;", &[]);
                 });
                 let _ = tx.send(r.map_err(|e| e.to_string()));
             })
@@ -256,6 +258,30 @@ impl Database for OracleDb {
             inserted: (rows.len() - errors.len()) as u64,
             errors,
         })
+    }
+    fn dbms_output(&self) -> Result<Vec<String>> {
+        use oracle::sql_type::OracleType;
+        let mut stmt = self
+            .conn
+            .statement("begin dbms_output.get_line(:1, :2); end;")
+            .build()
+            .map_err(err)?;
+        let mut lines = Vec::new();
+        let mut bytes = 0usize;
+        // Bounded so a runaway loop cannot fill memory.
+        while lines.len() < 10_000 && bytes < 4_000_000 {
+            stmt.execute(&[&OracleType::Varchar2(32767), &OracleType::Int64])
+                .map_err(err)?;
+            let status: i64 = stmt.bind_value(2).map_err(err)?;
+            if status != 0 {
+                break;
+            }
+            let line: Option<String> = stmt.bind_value(1).map_err(err)?;
+            let line = line.unwrap_or_default();
+            bytes += line.len();
+            lines.push(line);
+        }
+        Ok(lines)
     }
     fn commit(&self) -> Result<()> {
         self.conn.commit().map_err(err)

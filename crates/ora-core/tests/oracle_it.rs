@@ -983,3 +983,39 @@ fn explain_plan_reads_the_plan_and_cleans_up() {
     .unwrap();
     assert!(format!("{:?}", rows[0][0]).contains('0'), "{:?}", rows[0]);
 }
+
+#[test]
+#[ignore]
+fn plsql_exec_output_and_compile_errors_work_on_a_real_database() {
+    let (db, _) = connect();
+    let m = QueryManager::new(Arc::new(db), ora_core::profile::Environment::Dev);
+    let run = |sql: &str| {
+        m.run(
+            sql,
+            RunOptions {
+                confirmed: true,
+                ..Default::default()
+            },
+        )
+        .expect(sql)
+    };
+    // A procedure that prints, called through the SQL*Plus shorthand.
+    run("create or replace procedure ora_ide_it_p as begin dbms_output.put_line('hello'); end;");
+    let RunResult::Done { output, .. } = run("exec ora_ide_it_p;") else {
+        panic!()
+    };
+    assert_eq!(output, vec!["hello"]);
+    // A procedure that does not compile is created and its errors are reported with line and column.
+    let RunResult::Done { compile, .. } =
+        run("create or replace procedure ora_ide_it_bad as begin undefined_var := 1; end;")
+    else {
+        panic!()
+    };
+    let c = compile.expect("compile errors");
+    assert!(
+        c.has_errors && c.issues.iter().any(|i| i.text.contains("PLS-00201")),
+        "{c:?}"
+    );
+    run("drop procedure ora_ide_it_p");
+    run("drop procedure ora_ide_it_bad");
+}

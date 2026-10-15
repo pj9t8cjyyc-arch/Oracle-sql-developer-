@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:split": "node --experimental-strip-types scripts/split-check.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

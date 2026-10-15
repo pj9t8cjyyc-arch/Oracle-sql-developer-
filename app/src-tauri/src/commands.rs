@@ -278,6 +278,13 @@ pub async fn run_query(
     let (status, rows, error) = match &raw {
         Ok(RunResult::Rows { rows, .. }) => (Some(ExecStatus::Ok), Some(rows.len() as i64), None),
         Ok(RunResult::Affected { count, .. }) => (Some(ExecStatus::Ok), Some(*count as i64), None),
+        Ok(RunResult::Done {
+            compile: Some(c), ..
+        }) if c.has_errors => (
+            Some(ExecStatus::Error),
+            None,
+            Some(format!("{} created with compilation errors", c.object)),
+        ),
         Ok(RunResult::Done { .. }) => (Some(ExecStatus::Ok), None, None),
         Ok(RunResult::NeedsConfirmation { .. }) => (None, None, None),
         Err(ora_core::Error::Database(m)) => (

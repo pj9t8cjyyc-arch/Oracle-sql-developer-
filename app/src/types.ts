@@ -13,8 +13,11 @@ export interface Analysis {
 export type RunResult =
   | { kind: "needs_confirmation"; analysis: Analysis }
   | { kind: "rows"; handle: number; columns: Column[]; rows: Row[]; done: boolean; analysis: Analysis }
-  | { kind: "affected"; count: number; analysis: Analysis }
-  | { kind: "done"; analysis: Analysis };
+  | { kind: "affected"; count: number; analysis: Analysis; output: string[] }
+  | { kind: "done"; analysis: Analysis; output: string[]; compile: CompileReport | null };
+export interface CompileIssue { line: number; column: number; severity: string; text: string }
+/** A stored unit was created but does not compile. */
+export interface CompileReport { object: string; issues: CompileIssue[]; has_errors: boolean }
 export interface Page { rows: Row[]; done: boolean; truncated: boolean }
 export type Environment = "dev" | "test" | "prod";
 export type ConnKind = "easy" | "tns" | "connect_string";

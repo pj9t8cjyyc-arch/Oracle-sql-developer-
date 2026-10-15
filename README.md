@@ -45,6 +45,19 @@ A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React +
 
 **Limits:** cancel is checked between streamed chunks, so a service that stays silent keeps the call open until the timeout; the HTTP client uses the system proxy settings from the environment, but a custom corporate CA is not configurable yet; only the OpenAI-compatible request format is implemented.
 
+## Status: PL/SQL scripts
+
+| Piece | State |
+|---|---|
+| Blocks and stored units (`BEGIN`/`DECLARE`/`CREATE PROCEDURE|FUNCTION|PACKAGE|TRIGGER|TYPE`) end at a line holding only `/`, as in SQL*Plus | tested |
+| **`EXEC proc(args)`** is a one-line SQL*Plus command: it ends at its line (so it no longer swallows what follows) and is sent as `BEGIN proc(args); END;`. `CALL` is plain SQL and loses its `;` | tested |
+| **`DBMS_OUTPUT`** is enabled when the connection opens and drained after every PL/SQL statement (at most 10,000 lines / 4 MB); shown in the **Output** panel under the editor | core tested on a fake database |
+| **Compile errors:** after `CREATE [OR REPLACE] PROCEDURE|FUNCTION|PACKAGE [BODY]|TRIGGER|TYPE [BODY]`, `ALL_ERRORS` is read (names are bound, never pasted into SQL); the line, column and message appear in Output, the statement counts as failed (a script stops there) and history records an error | tested; line 1 is the CREATE line |
+| The browser demo now uses the **same splitting rules**: `app/src/split.ts` is checked against `crates/ora-core/tests/fixtures/split_cases.json`, which the Rust tests also read (`npm run test:split`, also in CI) | 14 shared cases |
+| Everything above **against a real Oracle** | **not run**: ignored test `plsql_exec_output_and_compile_errors_work_on_a_real_database` |
+
+**Limits:** a block without a closing `/` still runs to the end of the text (as in SQL*Plus); `EXEC` must fit on one line; other SQL*Plus commands (`SET`, `PROMPT`, `@file`, `VARIABLE`) are not understood; `:bind` variables are not prompted for yet; `DBMS_OUTPUT` appears after the statement finishes, not while it runs; the demo's PL/SQL run is a stand-in (it replays `PUT_LINE` text and fakes a compile error for the name `undefined_var`).
+
 ## Status: automatic AI help (no asking needed)
 
 | Piece | State |

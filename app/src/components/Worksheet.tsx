@@ -3,11 +3,12 @@ import type { Api } from "../api";
 import { badgesForQuery, type InsightCache, type QueryBadges } from "../badges";
 import { errText, useAsync } from "../hooks";
 import { Icon } from "../ui-icons";
-import type { Analysis, AssistSuggestion, AssistTrigger, Column, ObjectKind, Plan, Row, Screen, StatementRange } from "../types";
+import type { Analysis, AssistSuggestion, CompileReport, AssistTrigger, Column, ObjectKind, Plan, Row, Screen, StatementRange } from "../types";
 import { loadAssistOn, loadPolicy, saveAssistOn } from "../assist-config";
 import { AssistBar, type AssistState } from "./AssistBar";
 import { AskPanel } from "./AskPanel";
 import { PlanPanel } from "./PlanPanel";
+import { OutputPanel, type OutputBlock } from "./OutputPanel";
 import { ColumnFocus } from "./ColumnFocus";
 import { ConfirmDialog } from "./Dialogs";
 import { ExportDialog } from "./ExportDialog";
@@ -64,6 +65,7 @@ export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchema
   const [lastSelect, setLastSelect] = useState("");
   const [exporting, setExporting] = useState(false);
   const [plan, setPlan] = useState<Plan>();
+  const [outputs, setOutputs] = useState<OutputBlock[]>([]);
   const [asking, setAsking] = useState(false);
   const [assistOn, setAssistOn] = useState(loadAssistOn);
   const [astate, setAstate] = useState<AssistState>("idle");
@@ -86,6 +88,13 @@ export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchema
     handleRef.current = null;
     if (h !== null) await api.closeQuery(connId, h).catch(() => {});
   }, [api, connId]);
+
+  /** Keeps what a statement printed or why it did not compile, under the title of its first line. */
+  const noteOutput = (text: string, lines: string[], compile: CompileReport | null) => {
+    if (lines.length === 0 && !compile) return;
+    const title = text.replace(/--.*$/gm, "").trim().split("\n")[0].slice(0, 80);
+    setOutputs((o) => [...o, { title, lines, compile }]);
+  };
 
   /** Resolves true when the statement ran (rows, affected or done). */
   const run = useCallback(async (text: string, confirmed = false): Promise<boolean> => {
@@ -112,8 +121,13 @@ export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchema
           // Badges are decoration: never let a failure here affect the query result.
           api.references(text).then((refs) => badgesForQuery(getCache(connId), refs, tab.owner)).then(setQb).catch(() => {});
         }
-      } else if (r.kind === "affected") { okRun = true; setResult(undefined); setStatus(`${r.count.toLocaleString()} row(s) affected in ${secs}s — not committed`); }
-      else { okRun = true; setResult(undefined); setStatus(`Statement completed in ${secs}s`); }
+      } else if (r.kind === "affected") { okRun = true; setResult(undefined); noteOutput(text, r.output, null); setStatus(`${r.count.toLocaleString()} row(s) affected in ${secs}s — not committed`); }
+      else {
+        setResult(undefined);
+        noteOutput(text, r.output, r.compile);
+        if (r.compile?.has_errors) { setError(`${r.compile.object} was created but does not compile — see Output below for the line and message.`); setStatus("Created with compilation errors"); }
+        else { okRun = true; setStatus(`Statement completed in ${secs}s${r.output.length ? ` — ${r.output.length} line(s) of output` : ""}`); }
+      }
     } catch (e) {
       setError(errText(e)); setStatus("Failed");
       lastReviewed.current = tab.sql;
@@ -134,6 +148,7 @@ export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchema
 
   /** Selection wins; otherwise the statement under the cursor; F5 runs every statement in order and stops at the first one that fails. */
   const runRequest = useCallback(async (r: RunRequest) => {
+    setOutputs([]);
     if (r.all && !r.selection?.trim()) {
       let ranges: StatementRange[] = [];
       try { ranges = await api.statements(r.doc); } catch { /* fall back to the whole text */ }
@@ -296,6 +311,7 @@ export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchema
           <SqlEditor ghost={ghost} value={tab.sql} onChange={(sql) => onPatch({ sql })} onRun={runRequest} onReady={(h) => { editor.current = h; }} complete={(text, pos) => api.complete(connId, text, pos, tab.owner)} suggestHistory={(typed) => api.historySuggest(typed, conn.key, 5)} />
           {error && <div className="error" role="alert">{error}</div>}
           <div className="results">
+            {outputs.length > 0 && <OutputPanel blocks={outputs} onClose={() => setOutputs([])} />}
             {plan && <PlanPanel plan={plan} onClose={() => setPlan(undefined)} />}
             {result
               ? <ResultGrid columns={result.columns} rows={result.rows} onNearEnd={loadMore} badges={qb.badges} selectedColumn={focus?.column}
