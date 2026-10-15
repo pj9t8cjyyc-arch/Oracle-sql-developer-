@@ -5,16 +5,20 @@ import { ConnectDialog } from "./components/Dialogs";
 import { Explorer, type ConnState } from "./components/Explorer";
 import { ObjectPage, type ObjTarget } from "./components/ObjectPage";
 import { SearchPalette, type ConnHit } from "./components/SearchPalette";
+import { HistoryPage } from "./components/HistoryPage";
 import { Worksheet, type SheetTab } from "./components/Worksheet";
 import { errText } from "./hooks";
 import { Icon, KindIcon } from "./ui-icons";
-import type { ObjectEntry, ObjectKind, Profile } from "./types";
+import type { ObjectEntry, ObjectKind, Profile, WorksheetRec } from "./types";
 
 interface ObjTab { id: string; kind: "object"; connId: string; target: ObjTarget }
-type Tab = SheetTab | ObjTab;
+interface HistTab { id: "history"; kind: "history"; connId: "" }
+type Tab = SheetTab | ObjTab | HistTab;
+const uuid = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `ws-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
 const sameObj = (a: ObjTarget, b: ObjTarget) => a.owner === b.owner && a.kind === b.kind && a.name === b.name;
 const toKind = (t: string): ObjectKind => (t.replace(" BODY", "") as ObjectKind);
+const sig = (sql: string, owner: string, key: string) => `${key}|${owner}|${sql}`;
 
 export default function App() {
   const [api, setApi] = useState<Api>();
@@ -31,8 +35,27 @@ export default function App() {
   const seq = useRef(0);
   const caches = useRef(new Map<string, InsightCache>());
   const indexed = useRef(new Set<string>());
+  const saved = useRef(new Map<string, string>());
+  const lastSheetId = useRef<string>();
 
-  useEffect(() => { apiPromise.then(async (a) => { setApi(a); setProfiles(await a.listProfiles()); setConnectOpen(true); }); }, []);
+  useEffect(() => {
+    apiPromise.then(async (a) => {
+      setApi(a);
+      setProfiles(await a.listProfiles());
+      setConnectOpen(true);
+      // Bring back the worksheets that were open when the app was last closed. They keep
+      // their SQL and attach to their connection as soon as it is opened again.
+      try {
+        const open = await a.wsList({ state: "open", limit: 50 });
+        if (open.length) {
+          setTabs(open.map((w) => ({ id: w.uuid, kind: "sheet" as const, connId: "", connKey: w.conn_key, connName: w.conn_name, owner: w.owner, sql: w.sql, title: w.title, touched: true })));
+          setActiveId(open[0].uuid);
+          for (const w of open) saved.current.set(w.uuid, sig(w.sql, w.owner, w.conn_key));
+        }
+      } catch { /* history is optional: the app works without it */ }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const onError = useCallback((e: unknown) => setError(errText(e)), []);
   const getCache = useCallback((connId: string) => {
@@ -52,12 +75,18 @@ export default function App() {
     );
   }, [api, onError]);
 
-  const newSheet = useCallback((connId: string, owner: string, sql = "SELECT * FROM ") => {
-    const id = `t${++seq.current}`;
+  const newSheet = useCallback((connId: string, owner: string, sql = "SELECT * FROM ", touched = false) => {
+    const c = conns.find((x) => x.id === connId);
+    const id = uuid();
     const n = tabs.filter((t) => t.kind === "sheet").length + 1;
-    setTabs((t) => [...t, { id, kind: "sheet", connId, owner, sql, title: `SQL ${n}` }]);
+    setTabs((t) => [...t, { id, kind: "sheet", connId, connKey: c?.key ?? "", connName: c?.profile.name ?? "", owner, sql, title: `SQL ${n}`, touched }]);
     setActiveId(id);
-  }, [tabs]);
+  }, [tabs, conns]);
+
+  const openHistory = useCallback(() => {
+    setTabs((ts) => (ts.some((t) => t.id === "history") ? ts : [...ts, { id: "history", kind: "history", connId: "" }]));
+    setActiveId("history");
+  }, []);
 
   const openObject = useCallback((connId: string, kind: ObjectKind, owner: string, name: string, parent?: string | null, entry?: ObjectEntry | null, column?: string) => {
     const target: ObjTarget = { owner, kind, name, parent, entry, column };
@@ -76,28 +105,38 @@ export default function App() {
     if (!api) return;
     setConnecting(true); setConnectError("");
     try {
-      const id = await api.connect(p, password);
-      const schemas = await api.listSchemas(id);
-      const c: ConnState = { id, profile: p, schemas: schemas.length ? schemas : [p.user.toUpperCase()], user: p.user };
+      const info = await api.connect(p, password);
+      const schemas = await api.listSchemas(info.id);
+      const c: ConnState = { id: info.id, key: info.key, profile: p, schemas: schemas.length ? schemas : [p.user.toUpperCase()], user: p.user };
       setConns((cs) => [...cs, c]);
       setConnectOpen(false);
       const own = c.schemas.find((s) => s.toLowerCase() === p.user.toLowerCase()) ?? c.schemas[0];
-      const tid = `t${++seq.current}`;
-      setTabs((ts) => [...ts, { id: tid, kind: "sheet", connId: id, owner: own, sql: `SELECT * FROM ${own}.`, title: `SQL ${ts.filter((t) => t.kind === "sheet").length + 1}` }]);
-      setActiveId(tid);
+      // Restored worksheets that belong to this database attach to it now.
+      const waiting = tabs.filter((t): t is SheetTab => t.kind === "sheet" && !t.connId && t.connKey === info.key);
+      setTabs((ts) => {
+        const bound = ts.map((t) => (t.kind === "sheet" && !t.connId && t.connKey === info.key ? { ...t, connId: info.id, connName: p.name } : t));
+        if (waiting.length) return bound;
+        const id = uuid();
+        setActiveId(id);
+        return [...bound, { id, kind: "sheet", connId: info.id, connKey: info.key, connName: p.name, owner: own, sql: `SELECT * FROM ${own}.`, title: `SQL ${ts.filter((t) => t.kind === "sheet").length + 1}`, touched: false }];
+      });
+      if (waiting.length) setActiveId(waiting[0].id);
     } catch (e) { setConnectError(errText(e)); }
     finally { setConnecting(false); }
-  }, [api]);
+  }, [api, tabs]);
 
   const disconnect = useCallback(async (connId: string) => {
     if (!api) return;
     await api.disconnect(connId).catch(onError);
     caches.current.delete(connId);
     setConns((cs) => cs.filter((c) => c.id !== connId));
-    setTabs((ts) => { const rest = ts.filter((t) => t.connId !== connId || t.kind === "sheet"); return rest; });
+    setTabs((ts) => ts.filter((t) => t.connId !== connId || t.kind === "sheet").map((t) => (t.kind === "sheet" && t.connId === connId ? { ...t, connId: "" } : t)));
   }, [api, onError]);
 
   const closeTab = (id: string) => {
+    const t = tabs.find((x) => x.id === id);
+    // The worksheet is not deleted: it is archived and stays searchable under History.
+    if (t?.kind === "sheet" && api) api.wsClose(id).catch(onError);
     setTabs((ts) => {
       const i = ts.findIndex((t) => t.id === id);
       const rest = ts.filter((t) => t.id !== id);
@@ -113,19 +152,44 @@ export default function App() {
     else openObject(h.connId, toKind(h.parent), h.owner, h.name);
   };
 
+  const pickHistory = (h: import("./types").HistoryHit) => {
+    setSearchOpen(false);
+    const c = conns.find((x) => x.key === h.last_conn_key) ?? conns.find((x) => x.id === activeConnId) ?? conns[0];
+    if (c) newSheet(c.id, h.last_owner || c.schemas[0], h.sql, true);
+  };
+
   useEffect(() => {
     const k = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setSearchOpen(true); } };
     window.addEventListener("keydown", k);
     return () => window.removeEventListener("keydown", k);
   }, []);
 
+  // Autosave every worksheet the user has touched, shortly after they stop typing.
+  useEffect(() => {
+    if (!api) return;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    tabs.forEach((t, position) => {
+      if (t.kind !== "sheet" || !t.touched) return;
+      const s = sig(t.sql, t.owner, t.connKey);
+      if (saved.current.get(t.id) === s) return;
+      timers.push(setTimeout(() => {
+        api.wsSave({ uuid: t.id, conn_key: t.connKey, conn_name: t.connName, owner: t.owner, title: null, sql: t.sql, position })
+          .then(() => saved.current.set(t.id, s))
+          .catch(onError);
+      }, 700));
+    });
+    return () => timers.forEach(clearTimeout);
+  }, [api, tabs, onError]);
+
   const active = tabs.find((t) => t.id === activeId);
   const activeObj = active?.kind === "object" ? active : undefined;
+  const activeSheet = active?.kind === "sheet" ? active : undefined;
+  if (activeSheet) lastSheetId.current = activeSheet.id;
   const connOf = (id: string) => conns.find((c) => c.id === id);
   const connView = useMemo(() => Object.fromEntries(conns.map((c) => [c.id, { id: c.id, name: c.profile.name, env: c.profile.environment, user: c.user }])), [conns]);
 
   if (!api) return null;
-  const activeConnId = active?.connId ?? conns[0]?.id;
+  const activeConnId = active?.connId || conns[0]?.id;
 
   return (
     <div className="app">
@@ -134,6 +198,7 @@ export default function App() {
         <button className="search-pill" onClick={() => setSearchOpen(true)} disabled={conns.length === 0}>
           <Icon name="search" size={14} /> <span>Search tables, columns, source…</span> <kbd>Ctrl K</kbd>
         </button>
+        <button onClick={openHistory} title="Everything you have run, searchable"><Icon name="history" size={14} /> History</button>
         <span className="spacer" />
         {isDemo && <span className="demo">DEMO · no real database</span>}
         <button className="primary" disabled={conns.length === 0} onClick={() => { const c = connOf(activeConnId ?? "") ?? conns[0]; if (c) newSheet(c.id, c.schemas.find((s) => s.toLowerCase() === c.user.toLowerCase()) ?? c.schemas[0]); }}><Icon name="sql" size={14} /> New worksheet</button>
@@ -150,11 +215,12 @@ export default function App() {
             {tabs.map((t) => {
               const c = connOf(t.connId);
               const env = c?.profile.environment ?? "dev";
+              const noConn = t.kind === "history";
               return (
                 <div key={t.id} role="tab" aria-selected={t.id === activeId} className={`tab ${t.id === activeId ? "on" : ""}`} onClick={() => setActiveId(t.id)} title={c?.profile.name}>
-                  <span className={`tab-stripe env-${env}`} />
-                  {t.kind === "sheet" ? <Icon name="sql" size={14} /> : <KindIcon kind={t.target.kind} size={14} />}
-                  <span className="tab-title">{t.kind === "sheet" ? t.title : t.target.name}</span>
+                  <span className={`tab-stripe env-${env}`} style={noConn ? { background: "var(--accent)" } : undefined} />
+                  {t.kind === "sheet" ? <Icon name="sql" size={14} /> : t.kind === "history" ? <Icon name="history" size={14} /> : <KindIcon kind={t.target.kind} size={14} />}
+                  <span className="tab-title">{t.kind === "sheet" ? t.title : t.kind === "history" ? "History" : t.target.name}</span>
                   {c && conns.length > 1 && <span className="tab-conn">{c.profile.name.split(" ")[0]}</span>}
                   <button className="ghost icon close" aria-label="Close tab" onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}><Icon name="x" size={12} /></button>
                 </div>
@@ -172,9 +238,20 @@ export default function App() {
             )}
             {tabs.map((t) => (
               <div key={t.id} className="pane" hidden={t.id !== activeId}>
-                {t.kind === "sheet" ? (
+                {t.kind === "history" ? (
+                  <HistoryPage api={api} conns={conns} onError={onError} active={t.id === activeId} canInsert={tabs.some((x) => x.kind === "sheet")}
+                    onOpenSql={(sql, key) => { const c = conns.find((x) => x.key === key) ?? conns[0]; if (c) newSheet(c.id, c.schemas.find((s) => s.toLowerCase() === c.user.toLowerCase()) ?? c.schemas[0], sql, true); }}
+                    onInsertSql={(sql) => { const sh = tabs.find((x): x is SheetTab => x.kind === "sheet" && x.id === (activeSheet?.id ?? lastSheetId.current)); if (sh) { setTabs((ts) => ts.map((x) => (x.id === sh.id ? { ...sh, sql: sh.sql.trim() ? `${sh.sql.trimEnd()}\n\n${sql}` : sql, touched: true } : x))); setActiveId(sh.id); } }}
+                    onOpenWorksheet={(w: WorksheetRec) => {
+                      if (tabs.some((x) => x.id === w.uuid)) { setActiveId(w.uuid); return; }
+                      const c = conns.find((x) => x.key === w.conn_key);
+                      setTabs((ts) => [...ts, { id: w.uuid, kind: "sheet", connId: c?.id ?? "", connKey: w.conn_key, connName: w.conn_name, owner: w.owner, sql: w.sql, title: w.title, touched: true }]);
+                      saved.current.set(w.uuid, sig(w.sql, w.owner, w.conn_key));
+                      setActiveId(w.uuid);
+                    }} />
+                ) : t.kind === "sheet" ? (
                   <Worksheet api={api} conns={conns} tab={t} getCache={getCache} onError={onError} onSchemaOpened={onSchemaOpened}
-                    onPatch={(p) => setTabs((ts) => ts.map((x) => (x.id === t.id ? ({ ...x, ...p } as Tab) : x)))}
+                    onPatch={(p) => setTabs((ts) => ts.map((x) => (x.id === t.id ? ({ ...x, ...p, ...("sql" in p ? { touched: true } : {}) } as Tab) : x)))}
                     onOpen={(c, k, o, n, parent) => openObject(c, k, o, n, parent)} />
                 ) : connView[t.connId] ? (
                   <ObjectPage api={api} conn={connView[t.connId]} target={t.target} cache={getCache(t.connId)} onError={onError}
@@ -199,7 +276,7 @@ export default function App() {
           onCancel={conns.length > 0 ? () => setConnectOpen(false) : undefined}
         />
       )}
-      {searchOpen && conns.length > 0 && <SearchPalette api={api} conns={conns} activeConnId={activeConnId} onPick={pick} onClose={() => setSearchOpen(false)} />}
+      {searchOpen && conns.length > 0 && <SearchPalette api={api} conns={conns} activeConnId={activeConnId} onPick={pick} onPickHistory={pickHistory} onClose={() => setSearchOpen(false)} />}
     </div>
   );
 }

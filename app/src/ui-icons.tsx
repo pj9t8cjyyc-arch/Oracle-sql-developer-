@@ -29,6 +29,10 @@ const P: Record<string, string> = {
   alert: "M12 4 2.5 20h19L12 4Z M12 10v4 M12 17h.01",
   check: "m5 12 5 5 9-10",
   grid: "M3 3h8v8H3z M13 3h8v8h-8z M3 13h8v8H3z M13 13h8v8h-8z",
+  history: "M3 12a9 9 0 1 0 3-6.7 M3 4v5h5 M12 7v5l3 2",
+  star: "m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9L12 3Z",
+  trash: "M4 7h16 M9 7V4h6v3 M6 7l1 13h10l1-13 M10 11v6 M14 11v6",
+  pause: "M8 5v14 M16 5v14",
 };
 
 export type IconName = keyof typeof P;

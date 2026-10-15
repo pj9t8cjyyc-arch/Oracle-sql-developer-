@@ -3,8 +3,9 @@
 // Tauri or Oracle. The safe-mode check is a crude stand-in for the Rust guard;
 // none of this runs in the real app.
 import type { Api } from "./api";
+import { mockHistory, record } from "./mock-history";
 import type {
-  Analysis, Column, ColumnInsight, Completions, Hit, ObjectDeps, ObjectEntry, ObjectKind, Profile, Row, RunResult, SeqUse,
+  Analysis, Column, ColumnInsight, Completions, ConnInfo, Hit, ObjectDeps, ObjectEntry, ObjectKind, Profile, Row, RunResult, SeqUse,
   SequenceInfo, Suggestion, TableInsight, TableRef, TriggerInfo,
 } from "./types";
 
@@ -256,6 +257,7 @@ const sales: Db = {
 // --------------------------------------------------------------------- plumbing
 const dbs: Record<string, Db> = { FREEPDB1: hr, SALESPDB: sales };
 const conns = new Map<string, Db>();
+const connMeta = new Map<string, { key: string; name: string }>();
 let nextConn = 1;
 const db = (conn: string): Db => {
   const d = conns.get(conn);
@@ -345,30 +347,51 @@ function corpus(d: Db): Hit[] {
 }
 
 export const mockApi: Api = {
+  historyStatus: () => mockHistory.status(),
+  historySetEnabled: (e) => mockHistory.setEnabled(e),
+  historySearch: (q) => mockHistory.search(q),
+  historySuggest: (t, k, l) => mockHistory.suggest(t, k, l),
+  historyPin: (h, p) => mockHistory.pin(h, p),
+  historyForget: (h) => mockHistory.forget(h),
+  historyPurge: (b) => mockHistory.purge(b),
+  wsSave: (w) => mockHistory.wsSave(w),
+  wsClose: (u) => mockHistory.wsClose(u),
+  wsPin: (u, p) => mockHistory.wsPin(u, p),
+  wsDelete: (u) => mockHistory.wsDelete(u),
+  wsList: (f) => mockHistory.wsList(f),
+  wsGet: (u) => mockHistory.wsGet(u),
+  wsSteps: (u) => mockHistory.wsSteps(u),
   listProfiles: async (): Promise<Profile[]> => [
     { name: "HR · development", host: "dev-db.corp", port: 1521, service: "FREEPDB1", user: "hr", environment: "dev" },
     { name: "SALES · production", host: "prod-db.corp", port: 1521, service: "SALESPDB", user: "sales_ro", environment: "prod" },
   ],
   saveProfile: async () => {},
   deleteProfile: async () => {},
-  async connect(profile) {
+  async connect(profile): Promise<ConnInfo> {
     await sleep(250);
     const d = dbs[profile.service];
     if (!d) throw "ORA-12514: listener does not currently know of service requested";
     const id = `m${nextConn++}`;
     conns.set(id, d);
-    return id;
+    connMeta.set(id, { key: `key-${profile.service}`, name: profile.name });
+    return { id, key: `key-${profile.service}` };
   },
   disconnect: async (c) => void conns.delete(c),
-  async runQuery(conn, sql, confirmed, pageSize) {
+  async runQuery(conn, sql, confirmed, pageSize, owner, worksheet) {
     const d = db(conn);
+    const meta = connMeta.get(conn)!;
+    const t0 = performance.now();
+    const rec = (status: "ok" | "error", rows: number | null, error: string | null) =>
+      record({ sql, conn_key: meta.key, conn_name: meta.name, owner, worksheet, at: Date.now(), ms: Math.round(performance.now() - t0) + 12, rows, status, error });
     await sleep(60);
     const analysis = analyze(sql);
     if (analysis.requires_confirmation && !confirmed) return { kind: "needs_confirmation", analysis };
-    if (analysis.kind !== "select") return { kind: "affected", count: 3, analysis };
+    if (analysis.kind !== "select") { rec("ok", 3, null); return { kind: "affected", count: 3, analysis }; }
     const name = Object.keys(d.data).find((k) => new RegExp(`\\b${k}\\b`, "i").test(analysis.sql));
-    if (!name) throw "ORA-00942: table or view does not exist";
-    return rowsResult(d.data[name], analysis, pageSize);
+    if (!name) { rec("error", null, "ORA-00942: table or view does not exist"); throw "ORA-00942: table or view does not exist"; }
+    const r = rowsResult(d.data[name], analysis, pageSize);
+    rec("ok", r.kind === "rows" ? r.rows.length : null, null);
+    return r;
   },
   async fetchMore(_c, handle, pageSize) {
     await sleep(40);
@@ -429,6 +452,19 @@ export const mockApi: Api = {
   },
   complete: async (c, sql, cursor, owner) => mockComplete(db(c), sql, cursor, owner),
   references: async (sql) => mockRefs(sql),
+  async statements(sql) {
+    const out: { start: number; end: number; kind: string; text: string }[] = [];
+    let pos = 0;
+    for (const part of sql.split(";")) {
+      const start = pos;
+      pos += part.length + 1;
+      const text = part.trim();
+      if (!text.replace(/--.*$/gm, "").trim()) continue;
+      const lead = part.length - part.trimStart().length;
+      out.push({ start: start + lead, end: start + lead + text.length, kind: /^\s*(\w+)/.exec(text)?.[1]?.toLowerCase() ?? "other", text });
+    }
+    return out;
+  },
   async searchObjects(c, text, owner, kinds, limit) {
     const words = text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
     if (!words.length) return [];

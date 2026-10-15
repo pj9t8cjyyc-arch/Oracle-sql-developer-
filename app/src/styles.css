@@ -218,3 +218,34 @@ table.dict .cname { font-weight: 600; margin-right: 6px; } .num { text-align: ri
 .hk { width: 26px; text-align: center; color: var(--text-3); font-size: 11px; flex: none; }
 .hn { display: flex; flex-direction: column; min-width: 0; flex: 1; } .snippet { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
 mark { background: #ffd54f; color: #000; border-radius: 2px; padding: 0 1px; }
+
+/* ===== History + worksheets ===== */
+.ws-banner { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: var(--warn-soft); color: var(--text); border-bottom: 1px solid var(--line); }
+.history-page { flex: 1; overflow: auto; padding: 18px 26px 40px; }
+.hist-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.hist-head h2 { margin: 0; font-size: 19px; }
+.hist-stats { color: var(--text-2); font-size: 12px; }
+.rec-toggle { margin-left: auto; }
+.rec-on { color: var(--ok); } .rec-off { color: var(--bad); font-weight: 600; }
+.hist-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 12px 0 16px; }
+.hist-search { flex: 1 1 360px; display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 9px; }
+.hist-search input { flex: 1; border: 0; background: transparent; outline: none; font-size: 14px; padding: 0; }
+.chipbtn { border-radius: 14px; padding: 2px 11px; font-size: 12px; background: var(--surface); }
+.chipbtn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.qcard { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 10px; box-shadow: var(--shadow); overflow: hidden; }
+.qcard-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--surface-2); flex-wrap: wrap; }
+.qcard-head .meta { color: var(--text-2); font-size: 12px; }
+.qcard-head .grow { flex: 1; }
+.qsql { margin: 0; padding: 10px 14px; font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; max-height: 150px; overflow: hidden; position: relative; }
+.qsql.clip::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 28px; background: linear-gradient(transparent, var(--surface)); }
+.qfoot { display: flex; gap: 6px; align-items: center; padding: 6px 10px 8px; flex-wrap: wrap; }
+.qfoot .tables { display: flex; gap: 4px; flex-wrap: wrap; margin-right: auto; }
+.pinned-star { color: #e8a317; }
+.status-ok { color: var(--ok); } .status-error { color: var(--bad); } .status-cancelled { color: var(--warn); }
+.outline { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 14px; }
+.steps { border-top: 1px solid var(--line); padding: 6px 14px 10px; }
+.step { display: grid; grid-template-columns: 22px 150px 62px 1fr auto; gap: 10px; align-items: baseline; padding: 4px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
+.step:last-child { border-bottom: 0; } .step .sql { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step-err { grid-column: 2 / -1; color: var(--bad); font-size: 11.5px; }
+.hist-empty { padding: 40px; text-align: center; color: var(--text-3); }
+.palette-section { padding: 6px 14px 2px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); }
