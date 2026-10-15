@@ -3,6 +3,7 @@
 //! without a database (see [`fake::FakeDb`]).
 
 pub mod ai;
+pub mod assist;
 pub mod catalog;
 pub mod comments;
 pub mod complete;

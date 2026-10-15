@@ -51,6 +51,8 @@ fn main() {
             ai::ask_start,
             ai::ask_validate,
             ai::ask_extract_sql,
+            ai::assist_complete,
+            ai::assist_suggest,
             commands::explain_plan,
             compare::text_diff,
             compare::text_patch,

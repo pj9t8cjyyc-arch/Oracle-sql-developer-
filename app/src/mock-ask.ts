@@ -1,6 +1,6 @@
 // Demo-only stand-ins for explain plan and the Ask panel (ora-core `plan` and `context`).
 import type { Api } from "./api";
-import type { AiEvent, AskContext, Plan, PlanNode, SqlIssue } from "./types";
+import type { AiEvent, AskContext, Plan, PlanNode, SqlIssue, AssistSuggestion } from "./types";
 
 const TABLES: Record<string, string[]> = {
   EMPLOYEES: ["EMPLOYEE_ID", "FIRST_NAME", "LAST_NAME", "EMAIL", "HIRE_DATE", "JOB_ID", "SALARY", "DEPARTMENT_ID"],
@@ -47,7 +47,7 @@ function validate(sql: string): SqlIssue[] {
   return out;
 }
 
-export function askApi(listeners: Set<(e: AiEvent) => void>): Pick<Api, "explainPlan" | "askContext" | "askStart" | "askValidate" | "askExtractSql"> {
+export function askApi(listeners: Set<(e: AiEvent) => void>): Pick<Api, "explainPlan" | "askContext" | "askStart" | "askValidate" | "askExtractSql" | "assistComplete" | "assistSuggest"> {
   let seq = 100;
   return {
     explainPlan: async (_c, sql) => { await new Promise((r) => setTimeout(r, 150)); return plan(sql); },
@@ -70,6 +70,27 @@ export function askApi(listeners: Set<(e: AiEvent) => void>): Pick<Api, "explain
       return { id, context };
     },
     askValidate: async (_c, _o, sql) => validate(sql),
+    assistComplete: async (_c, _o, s) => {
+      await new Promise((r) => setTimeout(r, 120));
+      const b = s.before;
+      const rules: [RegExp, string][] = [
+        [/from\s+(?:hr\.)?emp$/i, "loyees e"],
+        [/from\s+(?:hr\.)?employees\s+e\s*$/i, "JOIN hr.departments d ON d.department_id = e.department_id"],
+        [/where\s*$/i, "e.department_id = :dept_id"],
+        [/order\s+by\s*$/i, "e.last_name"],
+      ];
+      const hit = rules.find(([re]) => re.test(b));
+      if (!hit || s.after.trim()) return { value: null, status: "skipped", message: null, sent: null };
+      return { value: (b.endsWith(" ") && hit[1].startsWith(" ") ? hit[1].trimStart() : hit[1]), status: "ok", message: null, sent: [2, 60] };
+    },
+    assistSuggest: async (_c, _o, s, trigger) => {
+      await new Promise((r) => setTimeout(r, 200));
+      const out: AssistSuggestion[] = [];
+      if (trigger === "error") out.push({ kind: "fix", title: "Table EMPLOYEE does not exist — did you mean HR.EMPLOYEES?", detail: "The error names a table that is not in this schema; the closest match is EMPLOYEES.", sql: (s.statement ?? "").replace(/\bemployee\b/gi, "hr.employees") || null });
+      else if (trigger === "result") out.push({ kind: "next", title: `Count ${s.result?.rows ?? 0} rows per department`, detail: "A quick aggregate to see how the rows are spread.", sql: "SELECT department_id, COUNT(*) AS n FROM hr.employees GROUP BY department_id ORDER BY n DESC" });
+      else if (/select\s+\*/i.test(s.statement ?? s.before)) out.push({ kind: "optimize", title: "SELECT * reads every column", detail: "List only the columns you need; it is faster and keeps the query stable when columns are added.", sql: null });
+      return { value: out, status: "ok", message: null, sent: [2, 60] };
+    },
     askExtractSql: async (answer) => [...answer.matchAll(/```sql\n([\s\S]*?)```/g)].map((m) => m[1].trim()),
   };
 }

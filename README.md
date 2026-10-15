@@ -45,6 +45,18 @@ A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React +
 
 **Limits:** cancel is checked between streamed chunks, so a service that stays silent keeps the call open until the timeout; the HTTP client uses the system proxy settings from the environment, but a custom corporate CA is not configurable yet; only the OpenAI-compatible request format is implemented.
 
+## Status: automatic AI help (no asking needed)
+
+| Piece | State |
+|---|---|
+| **Grey text at the cursor** (Tab accepts, Esc dismisses): after a 350 ms pause the model is asked to continue the SQL, at the end of a line only, never inside comments or strings, never after a finished statement. A newer keystroke cancels the older request, so stale text is never shown. Off while the normal completion list is open | 5 core tests (when to ask, output cleaning); behaviour verified in demo mode |
+| **After an error / after a result / after a pause**: a bar under the toolbar offers up to 3 suggestions (Fix, Faster, Next, Note) with the SQL to insert. Pausing is only reviewed when the text changed and is at least 20 characters | core parser tested (chatter, bad JSON, caps); UI verified in demo mode |
+| **Screen awareness**: the model is told the worksheet text around the cursor, the statement, the last error, the plan findings on screen, which schema you are in, and the *shape* of the last result (**column names and row count, never values**), plus the schema objects the context builder chose | tested: values and hidden columns never reach the prompt, fake closing tags are neutralised |
+| **Privacy and control**: **✨ Assist** switch in the toolbar (remembered), same **Never send** list as Chat, and every suggestion shows "sent N objects · ~T tokens". If the schema is not read yet, one button reads it. A sign-in problem pauses automatic calls; any other failure pauses them for 30 s | tested in demo mode |
+| Latency and quality against **your real endpoint** | **not run**: needs your endpoint and model. Completion requests are capped at 96 tokens, temperature 0 and a 2,000-token schema budget so a fast model feels instant |
+
+**Limits:** each automatic suggestion is a model call (completion after each typing pause, one per run, one per review pause), so use the switch on metered models; the "Read schema now" step reads the dictionary of the schema in the worksheet; grey text uses only the worksheet around the cursor, not the other tabs; suggested SQL is not validated against the schema yet (Chat does that).
+
 ## Status: explain plan & Ask AI
 
 | Piece | State |

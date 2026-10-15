@@ -1,4 +1,4 @@
-import type { AskContext, AskInput, ContextPolicy, Plan, SqlIssue, ClientStatus, ConnTest, TnsList, DataDiffOptions, DataSide, SchemaDiff, SidePreview, TextDiffResult, TextOptions, AiConfig, AiEvent, AiStatus, AiTest, ChatRequest, Completions, DossierOptions, KbExported, KbPreview, KbSummary, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
+import type { Assisted, AssistTrigger, Screen, AssistSuggestion, AskContext, AskInput, ContextPolicy, Plan, SqlIssue, ClientStatus, ConnTest, TnsList, DataDiffOptions, DataSide, SchemaDiff, SidePreview, TextDiffResult, TextOptions, AiConfig, AiEvent, AiStatus, AiTest, ChatRequest, Completions, DossierOptions, KbExported, KbPreview, KbSummary, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
 import { mockApi } from "./mock";
 
 /** Every call after `connect` is scoped to one connection id, so several databases can be open at once. */
@@ -87,6 +87,8 @@ export interface Api {
   askStart(conn: string, owner: string, input: AskInput, policy: ContextPolicy): Promise<{ id: string; context: AskContext }>;
   askValidate(conn: string, owner: string, sql: string): Promise<SqlIssue[]>;
   askExtractSql(answer: string): Promise<string[]>;
+  assistComplete(conn: string, owner: string, screen: Screen, policy: ContextPolicy): Promise<Assisted<string>>;
+  assistSuggest(conn: string, owner: string, screen: Screen, trigger: AssistTrigger, policy: ContextPolicy): Promise<Assisted<AssistSuggestion[]>>;
   onAi(cb: (e: AiEvent) => void): Promise<() => void>;
   // compare (text, data by key, schema); data compare runs as a job and reports through onJob
   textDiff(a: string, b: string, options: TextOptions, context: number | null): Promise<TextDiffResult>;
@@ -176,6 +178,8 @@ async function tauriApi(): Promise<Api> {
     askStart: (conn, owner, input, policy) => invoke("ask_start", { conn, owner, input, policy }),
     askValidate: (conn, owner, sql) => invoke("ask_validate", { conn, owner, sql }),
     askExtractSql: (answer) => invoke("ask_extract_sql", { answer }),
+    assistComplete: (conn, owner, screen, policy) => invoke("assist_complete", { conn, owner, screen, policy, model: null }),
+    assistSuggest: (conn, owner, screen, trigger, policy) => invoke("assist_suggest", { conn, owner, screen, trigger, policy, model: null }),
     textDiff: (a, b, options, context) => invoke("text_diff", { a, b, options, context }),
     textPatch: (a, b, options, aName, bName, context) => invoke("text_patch", { a, b, options, aName, bName, context }),
     textReadFile: (path) => invoke("text_read_file", { path }),

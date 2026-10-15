@@ -161,6 +161,11 @@ impl Hide<'_> {
     }
 }
 
+/// Whether a column name is on the person's never-send list (any table).
+pub fn column_hidden(policy: &ContextPolicy, name: &str) -> bool {
+    policy.exclude.iter().any(|p| matches_pattern(p, name))
+}
+
 /// Database text in a prompt: no control characters, no angle brackets (so it cannot close a tag),
 /// one line, at most 200 characters.
 pub fn clean_text(s: &str) -> String {

@@ -265,3 +265,10 @@ export interface ContextPolicy { include_comments: boolean; include_history: boo
 export interface CtxObject { id: string; why: string; score: number }
 export interface AskContext { text: string; objects: CtxObject[]; join_paths: string[]; tokens_estimate: number; truncated: boolean; excluded: number }
 export interface SqlIssue { severity: "error" | "warn"; message: string }
+
+// ---- proactive assistance
+export type AssistTrigger = "complete" | "error" | "result" | "review";
+export interface ResultSummary { columns: string[]; rows: number; more: boolean; elapsed_ms: number }
+export interface Screen { before: string; after: string; statement: string | null; error: string | null; result: ResultSummary | null; plan_findings: string[]; view: string | null }
+export interface AssistSuggestion { kind: "fix" | "optimize" | "next" | "explain"; title: string; detail: string; sql: string | null }
+export interface Assisted<T> { value: T | null; status: "ok" | "no_kb" | "auth" | "cancelled" | "skipped" | "error"; message: string | null; sent: [number, number] | null }

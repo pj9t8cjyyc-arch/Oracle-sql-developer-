@@ -2,16 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import type { Api } from "../api";
 import { chatWith } from "../ai-client";
 import { errText } from "../hooks";
+import { loadPolicy, savePolicy } from "../assist-config";
 import type { AskContext, AskMode, ChatMessage, ContextPolicy, SqlIssue } from "../types";
 
 const MODES: [AskMode, string][] = [["write_sql", "Write SQL"], ["ask", "Ask"], ["explain", "Explain"], ["fix", "Fix error"]];
-const POLICY_KEY = "ora.ask.policy";
-
-function loadPolicy(): ContextPolicy {
-  const d: ContextPolicy = { include_comments: true, include_history: true, exclude: [], max_tokens: 6000, max_objects: 25 };
-  try { return { ...d, ...JSON.parse(localStorage.getItem(POLICY_KEY) ?? "{}") }; } catch { return d; }
-}
-
 interface Turn { q: string; a: string; sql: string[]; issues: SqlIssue[][]; context?: AskContext; error?: string }
 
 /** Questions about the connected schema. Only the part of the schema the question needs is sent, and it is shown here. */
@@ -28,7 +22,7 @@ export function AskPanel({ api, conn, owner, getSql, lastError, onInsert, onClos
   const cancel = useRef<() => void>();
   const bottom = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { try { localStorage.setItem(POLICY_KEY, JSON.stringify(policy)); } catch { /* optional */ } }, [policy]);
+  useEffect(() => { savePolicy(policy); }, [policy]);
   useEffect(() => { bottom.current?.scrollIntoView?.({ block: "end" }); }, [turns]);
   useEffect(() => { if (mode === "fix" && lastError && !text) setText("Why did this fail and how do I fix it?"); }, [mode, lastError, text]);
 
