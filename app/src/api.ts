@@ -1,4 +1,4 @@
-import type { AiConfig, AiEvent, AiStatus, AiTest, ChatRequest, Completions, DossierOptions, KbExported, KbPreview, KbSummary, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
+import type { DataDiffOptions, DataSide, SchemaDiff, SidePreview, TextDiffResult, TextOptions, AiConfig, AiEvent, AiStatus, AiTest, ChatRequest, Completions, DossierOptions, KbExported, KbPreview, KbSummary, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
 import { mockApi } from "./mock";
 
 /** Every call after `connect` is scoped to one connection id, so several databases can be open at once. */
@@ -80,6 +80,14 @@ export interface Api {
   aiChatStart(request: ChatRequest): Promise<string>;
   aiCancel(id: string): Promise<void>;
   onAi(cb: (e: AiEvent) => void): Promise<() => void>;
+  // compare (text, data by key, schema); data compare runs as a job and reports through onJob
+  textDiff(a: string, b: string, options: TextOptions, context: number | null): Promise<TextDiffResult>;
+  textPatch(a: string, b: string, options: TextOptions, aName: string, bName: string, context: number): Promise<string>;
+  textReadFile(path: string): Promise<string>;
+  textWriteFile(path: string, content: string): Promise<void>;
+  dataSidePreview(side: DataSide): Promise<SidePreview>;
+  dataDiffStart(a: DataSide, b: DataSide, options: DataDiffOptions, outPath: string | null): Promise<string>;
+  schemaCompare(connA: string, ownerA: string, connB: string, ownerB: string, includeCode: boolean): Promise<SchemaDiff>;
 }
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -134,7 +142,7 @@ async function tauriApi(): Promise<Api> {
     },
     async pickOpenPath(extensions) {
       const { open } = await import("@tauri-apps/plugin-dialog");
-      const r = await open({ multiple: false, directory: false, filters: [{ name: "Data files", extensions }] });
+      const r = await open({ multiple: false, directory: false, ...(extensions.length ? { filters: [{ name: "Files", extensions }] } : {}) });
       return typeof r === "string" ? r : null;
     },
     async onJob(cb) {
@@ -152,6 +160,13 @@ async function tauriApi(): Promise<Api> {
     aiTest: () => invoke("ai_test"),
     aiChatStart: (request) => invoke("ai_chat_start", { request }),
     aiCancel: (id) => invoke("ai_cancel", { id }),
+    textDiff: (a, b, options, context) => invoke("text_diff", { a, b, options, context }),
+    textPatch: (a, b, options, aName, bName, context) => invoke("text_patch", { a, b, options, aName, bName, context }),
+    textReadFile: (path) => invoke("text_read_file", { path }),
+    textWriteFile: (path, content) => invoke("text_write_file", { path, content }),
+    dataSidePreview: (side) => invoke("data_side_preview", { side }),
+    dataDiffStart: (a, b, options, outPath) => invoke("data_diff_start", { a, b, options, outPath }),
+    schemaCompare: (connA, ownerA, connB, ownerB, includeCode) => invoke("schema_compare", { connA, ownerA, connB, ownerB, includeCode }),
     async onAi(cb) {
       const { listen } = await import("@tauri-apps/api/event");
       return listen("ai-event", (e) => cb(e.payload as never));

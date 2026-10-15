@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiPromise, isDemo, type Api } from "./api";
 import { InsightCache } from "./badges";
 import { ConnectDialog } from "./components/Dialogs";
+import { ComparePage } from "./components/ComparePage";
 import { AiSettings } from "./components/AiSettings";
 import { GraphPage } from "./components/GraphPage";
 import { exposeAiLogin } from "./ai-login";
@@ -20,7 +21,8 @@ interface ObjTab { id: string; kind: "object"; connId: string; target: ObjTarget
 interface HistTab { id: "history"; kind: "history"; connId: "" }
 interface PkgTab { id: string; kind: "packages"; connId: string; owner: string; select?: string }
 interface GraphTab { id: string; kind: "graph"; connId: string; owner: string; focus?: string }
-type Tab = SheetTab | ObjTab | HistTab | PkgTab | GraphTab;
+interface CmpTab { id: "compare"; kind: "compare"; connId: "" }
+type Tab = SheetTab | ObjTab | HistTab | PkgTab | GraphTab | CmpTab;
 const uuid = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `ws-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
 const sameObj = (a: ObjTarget, b: ObjTarget) => a.owner === b.owner && a.kind === b.kind && a.name === b.name;
@@ -110,6 +112,11 @@ export default function App() {
     const id = `gr:${connId}:${owner}`;
     setTabs((ts) => (ts.some((t) => t.id === id) ? ts.map((t) => (t.id === id ? { ...t, focus } as Tab : t)) : [...ts, { id, kind: "graph", connId, owner, focus }]));
     setActiveId(id);
+  }, []);
+
+  const openCompare = useCallback(() => {
+    setTabs((ts) => (ts.some((t) => t.id === "compare") ? ts : [...ts, { id: "compare", kind: "compare", connId: "" }]));
+    setActiveId("compare");
   }, []);
 
   const openObject = useCallback((connId: string, kind: ObjectKind, owner: string, name: string, parent?: string | null, entry?: ObjectEntry | null, column?: string) => {
@@ -227,6 +234,7 @@ export default function App() {
         <button disabled={conns.length === 0} onClick={() => setImporting(true)} title="Load a CSV or Excel file into a table"><Icon name="upload" size={14} /> Import</button>
         <button disabled={conns.length === 0} onClick={() => { const c = connOf(activeConnId ?? "") ?? conns[0]; if (c) openPackages(c.id, ctxOwner(c)); }} title="Every package: members, callers, tables used"><Icon name="package" size={14} /> Packages</button>
         <button disabled={conns.length === 0} onClick={() => { const c = connOf(activeConnId ?? "") ?? conns[0]; if (c) openGraph(c.id, ctxOwner(c)); }} title="What uses what"><Icon name="out" size={14} /> Graph</button>
+        <button onClick={openCompare} title="Compare text, data or schemas"><Icon name="columns" size={14} /> Compare</button>
         <button onClick={() => setAiOpen(true)} title={aiStatus?.signed_in && aiStatus.configured ? "AI is ready" : "Set up the AI connection"}>
           <span className={`dot ${aiStatus?.signed_in && aiStatus.configured ? "ok" : aiStatus?.configured ? "warn" : "off"}`} /> AI
         </button>
@@ -247,12 +255,12 @@ export default function App() {
             {tabs.map((t) => {
               const c = connOf(t.connId);
               const env = c?.profile.environment ?? "dev";
-              const noConn = t.kind === "history";
+              const noConn = t.kind === "history" || t.kind === "compare";
               return (
                 <div key={t.id} role="tab" aria-selected={t.id === activeId} className={`tab ${t.id === activeId ? "on" : ""}`} onClick={() => setActiveId(t.id)} title={c?.profile.name}>
                   <span className={`tab-stripe env-${env}`} style={noConn ? { background: "var(--accent)" } : undefined} />
-                  {t.kind === "sheet" ? <Icon name="sql" size={14} /> : t.kind === "history" ? <Icon name="history" size={14} /> : t.kind === "packages" ? <Icon name="package" size={14} /> : t.kind === "graph" ? <Icon name="out" size={14} /> : <KindIcon kind={t.target.kind} size={14} />}
-                  <span className="tab-title">{t.kind === "sheet" ? t.title : t.kind === "history" ? "History" : t.kind === "packages" ? `Packages · ${t.owner}` : t.kind === "graph" ? `Graph · ${t.owner}` : t.target.name}</span>
+                  {t.kind === "sheet" ? <Icon name="sql" size={14} /> : t.kind === "history" ? <Icon name="history" size={14} /> : t.kind === "compare" ? <Icon name="columns" size={14} /> : t.kind === "packages" ? <Icon name="package" size={14} /> : t.kind === "graph" ? <Icon name="out" size={14} /> : <KindIcon kind={t.target.kind} size={14} />}
+                  <span className="tab-title">{t.kind === "sheet" ? t.title : t.kind === "history" ? "History" : t.kind === "compare" ? "Compare" : t.kind === "packages" ? `Packages · ${t.owner}` : t.kind === "graph" ? `Graph · ${t.owner}` : t.target.name}</span>
                   {c && conns.length > 1 && <span className="tab-conn">{c.profile.name.split(" ")[0]}</span>}
                   <button className="ghost icon close" aria-label="Close tab" onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}><Icon name="x" size={12} /></button>
                 </div>
@@ -270,7 +278,11 @@ export default function App() {
             )}
             {tabs.map((t) => (
               <div key={t.id} className="pane" hidden={t.id !== activeId}>
-                {t.kind === "packages" ? (
+                {t.kind === "compare" ? (
+                  <ComparePage api={api} conns={conns} onError={onError}
+                    sheets={tabs.filter((x): x is SheetTab => x.kind === "sheet").map((x) => ({ id: x.id, title: x.title, sql: x.sql }))}
+                    onWorksheet={(c, o, sql) => newSheet(c, o, sql, true)} />
+                ) : t.kind === "packages" ? (
                   connView[t.connId] ? <PackagesPage api={api} conn={t.connId} owner={t.owner} select={t.select} onError={onError}
                     onOpenSource={(p) => openObject(t.connId, "PACKAGE", t.owner, p)} onOpenTable={(n) => openObject(t.connId, "TABLE", t.owner, n)}
                     onGraph={(p) => openGraph(t.connId, t.owner, `PACKAGE:${t.owner}.${p}`)} /> : <div className="ws-empty"><p>This connection was closed.</p></div>

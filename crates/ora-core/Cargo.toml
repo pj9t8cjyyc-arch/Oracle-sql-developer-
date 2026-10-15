@@ -25,3 +25,4 @@ calamine = { version = "0.36.1", features = ["dates"] }
 chrono = "0.4.45"
 zip = { version = "9.0.3", default-features = false, features = ["deflate"] }
 ureq = "3.4.2"
+similar = "3.2.0"

@@ -108,8 +108,8 @@ export interface ExportOptions {
 }
 export interface ExportRequest { source: ExportSource; path: string; options: ExportOptions; row_limit: number | null; overwrite: boolean }
 export interface ExportReport { rows: number; bytes: number; files: string[]; elapsed_ms: number; rows_per_sec: number; warnings: string[]; cancelled: boolean }
-export interface JobProgress { id: string; kind: "export" | "import" | "validate"; rows: number; bytes: number; rejected: number; elapsed_ms: number }
-export interface JobDone { id: string; kind: "export" | "import" | "validate"; ok: boolean; cancelled: boolean; error: string | null; report: unknown }
+export interface JobProgress { id: string; kind: "export" | "import" | "validate" | "compare"; rows: number; bytes: number; rejected: number; elapsed_ms: number }
+export interface JobDone { id: string; kind: "export" | "import" | "validate" | "compare"; ok: boolean; cancelled: boolean; error: string | null; report: unknown }
 export type JobEvent = { type: "progress"; data: JobProgress } | { type: "done"; data: JobDone };
 
 export type ColKindName = "empty" | "integer" | "decimal" | "date" | "timestamp" | "boolean" | "text";
@@ -191,3 +191,42 @@ export type AiEvent =
   | { type: "delta"; id: string; text: string }
   | { type: "done"; id: string; result: ChatResult }
   | { type: "error"; id: string; message: string; auth_required: boolean };
+
+// ---- compare: text, data, schema
+export interface TextOptions { ignore_whitespace: boolean; ignore_case: boolean; ignore_sql_comments: boolean; ignore_blank_lines: boolean }
+export type DiffRowKind = "equal" | "delete" | "insert" | "change" | "skip";
+export interface DiffSpan { text: string; changed: boolean }
+export interface DiffRow { kind: DiffRowKind; a_no: number | null; b_no: number | null; a: string | null; b: string | null; a_spans: DiffSpan[]; b_spans: DiffSpan[]; skipped: number }
+export interface TextStats { equal: number; deleted: number; inserted: number; changed: number; lines_a: number; lines_b: number; identical: boolean; byte_identical: boolean }
+export interface TextDiffResult { rows: DiffRow[]; stats: TextStats }
+
+export type DataSide =
+  | { type: "file"; path: string; read: ReadOptions }
+  | { type: "query"; conn: string; sql: string }
+  | { type: "table"; conn: string; owner: string; table: string };
+export interface SidePreview { columns: string[]; sample: (string | null)[][]; suggested_keys: string[][] }
+export interface DataDiffOptions {
+  keys: string[]; trim: boolean; ignore_case: boolean; empty_is_null: boolean; numeric: boolean; dates: boolean;
+  a_decimal: string; b_decimal: string; max_samples: number; memory_rows: number; partitions: number;
+}
+export interface CellDiff { column: string; a: string | null; b: string | null }
+export interface ChangedRow { key: (string | null)[]; diffs: CellDiff[] }
+export interface DataDiffReport {
+  key_columns: string[]; whole_row: boolean; compared_columns: string[]; only_in_a_columns: string[]; only_in_b_columns: string[];
+  rows_a: number; rows_b: number; same: number; changed: number; only_a: number; only_b: number;
+  duplicate_keys_a: number; duplicate_keys_b: number; empty_keys_a: number; empty_keys_b: number;
+  by_column: [string, number][]; layout: string[]; changed_samples: ChangedRow[]; only_a_samples: (string | null)[][]; only_b_samples: (string | null)[][];
+  diff_file: string | null; spilled: boolean; cancelled: boolean; identical: boolean; elapsed_ms: number; warnings: string[];
+}
+
+export interface SchemaChange { change: "only_a" | "only_b" | "differs"; what: string; name: string; a: string | null; b: string | null }
+export interface SchemaTableDiff { name: string; changes: SchemaChange[] }
+export interface CodeDiff { kind: string; name: string; change: "only_a" | "only_b" | "differs" }
+export interface SchemaSummary {
+  tables_only_a: number; tables_only_b: number; tables_differ: number; column_changes: number; other_changes: number;
+  code_only_a: number; code_only_b: number; code_differs: number; identical: boolean;
+}
+export interface SchemaDiff {
+  owner_a: string; owner_b: string; tables_only_a: string[]; tables_only_b: string[]; tables: SchemaTableDiff[]; sequences: SchemaChange[];
+  code: CodeDiff[]; code_compared: boolean; summary: SchemaSummary; script: string; notes: string[];
+}

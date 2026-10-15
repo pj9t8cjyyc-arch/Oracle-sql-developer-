@@ -2,6 +2,7 @@
 
 mod ai;
 mod commands;
+mod compare;
 mod jobs;
 
 fn main() {
@@ -43,6 +44,13 @@ fn main() {
             ai::ai_test,
             ai::ai_chat_start,
             ai::ai_cancel,
+            compare::text_diff,
+            compare::text_patch,
+            compare::text_read_file,
+            compare::text_write_file,
+            compare::data_side_preview,
+            compare::data_diff_start,
+            compare::schema_compare,
             commands::save_profile,
             commands::delete_profile,
             commands::connect,

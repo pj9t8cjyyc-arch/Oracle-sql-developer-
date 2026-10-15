@@ -5,6 +5,7 @@
 import type { Api } from "./api";
 import { mockHistory, record } from "./mock-history";
 import { aiApi } from "./mock-ai";
+import { compareApi } from "./mock-compare";
 import { graphApi } from "./mock-graph";
 import { transferApi } from "./mock-transfer";
 import type {
@@ -355,8 +356,7 @@ const typeParts = (display: string): Pick<import("./types").TargetCol, "data_typ
   return { data_type: base, char_length: base === "VARCHAR2" ? Number(m[2] ?? 0) : 0, data_length: base === "NUMBER" ? 22 : Number(m[2] ?? 7), char_used: base === "VARCHAR2" ? "C" : "", precision: base === "NUMBER" && m[2] ? Number(m[2]) : null, scale: base === "NUMBER" && m[2] ? Number(m[3] ?? 0) : null };
 };
 
-const transfer = transferApi({
-  tableRows(conn, source) {
+function tableRowsFor(conn: string, source: import("./types").ExportSource) {
     const d = db(conn);
     const sql = source.type === "query" ? source.sql : "";
     const name = source.type === "table" ? source.table : Object.keys(d.data).find((k) => new RegExp(`\\b${k}\\b`, "i").test(sql));
@@ -366,7 +366,10 @@ const transfer = transferApi({
     const ins = d.insights[`${owner}.${name!.toUpperCase()}`];
     const n = Math.min(t.total, 5000);
     return { columns: t.columns.map((c) => c.name), types: t.columns.map((c) => ins?.columns.find((x) => x.name === c.name)?.data_type ?? "VARCHAR2(30)"), rows: Array.from({ length: n }, (_, i) => t.row(i)) };
-  },
+  }
+
+const transfer = transferApi({
+  tableRows: tableRowsFor,
   targets(conn, owner, table) {
     const d = db(conn);
     const ins = d.insights[`${owner}.${table}`];
@@ -379,6 +382,7 @@ export const mockApi: Api = {
   ...transfer,
   ...graphApi(),
   ...aiApi(),
+  ...compareApi({ rows: (side) => { const src = side.type === "query" ? { type: "query" as const, sql: side.sql } : { type: "table" as const, owner: (side as { owner: string }).owner, table: (side as { table: string }).table, where_clause: null }; const conn = (side as { conn: string }).conn; const d = tableRowsFor(conn, src); return { columns: d.columns, rows: d.rows }; } }),
   historyStatus: () => mockHistory.status(),
   historySetEnabled: (e) => mockHistory.setEnabled(e),
   historySearch: (q) => mockHistory.search(q),
