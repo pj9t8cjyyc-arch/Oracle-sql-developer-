@@ -2,6 +2,20 @@
 
 A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React + CodeMirror UI.
 
+## Status: AI provider layer
+
+| Piece | State |
+|---|---|
+| Provider-neutral chat layer in the core: `OpenAiCompatible` (`/chat/completions`, JSON or server-sent events, configurable endpoint, path, model, token header and prefix, extra headers, timeout) and a deterministic `Mock` provider | 11 core tests against a local fake HTTP server (request shape, streaming order, cancel, 401, 429/500, wrong answer shape, custom header, validation, mock) |
+| **Token handling:** set by your enterprise login through `provideAiToken(api, token, expiresAtMs)` (`app/src/ai-login.ts`, also `window.oraIdeProvideAiToken`); kept **in memory only**; never saved, never returned to the page, never in an error message; 30 s expiry margin; a 401 drops it and asks to sign in again | tested |
+| Settings dialog (top bar **AI**): endpoint, model, header, "Save and test" with a clear result; plain `http://` is refused except for localhost; headers with line breaks and user-info in URLs are refused | UI verified in demo mode |
+| Streaming client for the UI (`ai-client.ts`): events that arrive before the call is acknowledged are kept, other calls' events ignored, cancel works before the id is known, auth errors are a distinct type | 5 checks run in Node |
+| Everything above **against your real endpoint** | **not run**: needs your URL, model and token. `AI_BASE_URL=… AI_MODEL=… AI_TOKEN=… cargo test -p ora-core --test ai_it -- --ignored --nocapture` checks it in one go |
+
+**Nothing is sent yet.** This layer only carries a chat. What may go into a prompt (schema only, statistics, sample rows) is decided by the context builder, which comes next, and defaults to metadata only.
+
+**Limits:** cancel is checked between streamed chunks, so a service that stays silent keeps the call open until the timeout; the HTTP client uses the system proxy settings from the environment, but a custom corporate CA is not configurable yet; only the OpenAI-compatible request format is implemented.
+
 ## Status: PL/Scope (exact package usage)
 
 | Piece | State |

@@ -175,3 +175,19 @@ export interface KbSummary {
 export interface DossierOptions { focus: string; direction: Direction; hops: number; include_source: boolean; max_member_lines: number; max_nodes?: number | null }
 export interface KbPreview { markdown: string; files: string[]; tokens_estimate: number; truncated: boolean; missing: string[]; preview_cut: boolean }
 export interface KbExported { path: string; bytes: number; files: number; tokens_estimate: number }
+
+// ---- AI provider layer
+export interface AiConfig {
+  provider: "openai_compatible" | "mock"; base_url: string; path: string; model: string; auth_header: string; auth_scheme: string;
+  extra_headers: Record<string, string>; timeout_secs: number; stream: boolean; max_tokens: number | null; temperature: number | null;
+}
+export interface AiStatus { configured: boolean; signed_in: boolean; expires_at_ms: number | null; provider: string; model: string; base_url: string; config_error: string | null }
+export interface AiTest { ok: boolean; text: string; elapsed_ms: number; error: string | null; auth_required: boolean }
+export type ChatRole = "system" | "user" | "assistant";
+export interface ChatMessage { role: ChatRole; content: string }
+export interface ChatRequest { messages: ChatMessage[]; model?: string | null; max_tokens?: number | null; temperature?: number | null }
+export interface ChatResult { text: string; usage: { prompt_tokens: number; completion_tokens: number } | null; finish_reason: string | null; cancelled: boolean; elapsed_ms: number }
+export type AiEvent =
+  | { type: "delta"; id: string; text: string }
+  | { type: "done"; id: string; result: ChatResult }
+  | { type: "error"; id: string; message: string; auth_required: boolean };

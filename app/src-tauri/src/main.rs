@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ai;
 mod commands;
 mod jobs;
 
@@ -34,6 +35,14 @@ fn main() {
             commands::kb_status,
             commands::kb_preview,
             commands::kb_export,
+            ai::ai_status,
+            ai::ai_get_config,
+            ai::ai_save_config,
+            ai::ai_set_token,
+            ai::ai_clear_token,
+            ai::ai_test,
+            ai::ai_chat_start,
+            ai::ai_cancel,
             commands::save_profile,
             commands::delete_profile,
             commands::connect,

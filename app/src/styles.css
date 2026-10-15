@@ -331,3 +331,7 @@ table.map tr.bad td { background: var(--bad-soft); }
 .modal.kb { max-height: 92vh; }
 .tag.ok { background: var(--ok-soft); color: var(--ok); }
 code.block { display: block; margin-top: 4px; white-space: pre-wrap; user-select: all; }
+
+/* ---- AI settings */
+.dot.warn { background: var(--warn); } .dot.off { background: var(--text-3); }
+.modal.ai textarea { width: 100%; font: 12px var(--mono); resize: vertical; }

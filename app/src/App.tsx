@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiPromise, isDemo, type Api } from "./api";
 import { InsightCache } from "./badges";
 import { ConnectDialog } from "./components/Dialogs";
+import { AiSettings } from "./components/AiSettings";
 import { GraphPage } from "./components/GraphPage";
+import { exposeAiLogin } from "./ai-login";
 import { ImportWizard } from "./components/ImportWizard";
 import { PackagesPage } from "./components/PackagesPage";
 import { Explorer, type ConnState } from "./components/Explorer";
@@ -28,6 +30,8 @@ const sig = (sql: string, owner: string, key: string) => `${key}|${owner}|${sql}
 export default function App() {
   const [api, setApi] = useState<Api>();
   const [importing, setImporting] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiStatus, setAiStatus] = useState<import("./types").AiStatus>();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [conns, setConns] = useState<ConnState[]>([]);
   const [tabs, setTabs] = useState<Tab[]>([]);
@@ -47,6 +51,8 @@ export default function App() {
   useEffect(() => {
     apiPromise.then(async (a) => {
       setApi(a);
+      exposeAiLogin(a);
+      a.aiStatus().then(setAiStatus).catch(() => {});
       setProfiles(await a.listProfiles());
       setConnectOpen(true);
       // Bring back the worksheets that were open when the app was last closed. They keep
@@ -221,6 +227,9 @@ export default function App() {
         <button disabled={conns.length === 0} onClick={() => setImporting(true)} title="Load a CSV or Excel file into a table"><Icon name="upload" size={14} /> Import</button>
         <button disabled={conns.length === 0} onClick={() => { const c = connOf(activeConnId ?? "") ?? conns[0]; if (c) openPackages(c.id, ctxOwner(c)); }} title="Every package: members, callers, tables used"><Icon name="package" size={14} /> Packages</button>
         <button disabled={conns.length === 0} onClick={() => { const c = connOf(activeConnId ?? "") ?? conns[0]; if (c) openGraph(c.id, ctxOwner(c)); }} title="What uses what"><Icon name="out" size={14} /> Graph</button>
+        <button onClick={() => setAiOpen(true)} title={aiStatus?.signed_in && aiStatus.configured ? "AI is ready" : "Set up the AI connection"}>
+          <span className={`dot ${aiStatus?.signed_in && aiStatus.configured ? "ok" : aiStatus?.configured ? "warn" : "off"}`} /> AI
+        </button>
         <button onClick={openHistory} title="Everything you have run, searchable"><Icon name="history" size={14} /> History</button>
         <span className="spacer" />
         {isDemo && <span className="demo">DEMO · no real database</span>}
@@ -309,6 +318,7 @@ export default function App() {
         />
       )}
       {importing && (() => { const c = connOf(activeConnId ?? "") ?? conns[0]; return c ? <ImportWizard api={api} conn={c.id} env={c.profile.environment} schemas={c.schemas} initial={{ owner: c.schemas.find((s) => s.toLowerCase() === c.user.toLowerCase()) ?? c.schemas[0], table: "" }} onClose={() => setImporting(false)} onError={onError} /> : null; })()}
+      {aiOpen && <AiSettings api={api} onClose={() => setAiOpen(false)} onChanged={setAiStatus} />}
       {searchOpen && conns.length > 0 && <SearchPalette api={api} conns={conns} activeConnId={activeConnId} onPick={pick} onPickHistory={pickHistory} onClose={() => setSearchOpen(false)} />}
     </div>
   );

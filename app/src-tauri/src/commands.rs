@@ -48,11 +48,27 @@ pub struct AppState {
     graphs: Mutex<HashMap<String, Arc<ora_core::graph::Graph>>>,
     /// Knowledge-base snapshots per `connection|SCHEMA`; the latest is also kept in the local SQLite file.
     kbs: Mutex<HashMap<String, Arc<ora_core::knowledge::Knowledge>>>,
+    /// AI settings and the in-memory sign-in token (never persisted).
+    pub(crate) ai: Arc<ora_core::ai::AiSession>,
+    pub(crate) ai_calls: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 impl AppState {
+    /// The local settings store, for the AI commands.
+    pub(crate) fn history_for_ai(&self) -> &Mutex<HistoryStore> {
+        &self.history
+    }
+
     pub fn new(history: HistoryStore, persistent: bool) -> Self {
+        let ai_cfg = history
+            .setting_get("ai.config")
+            .ok()
+            .flatten()
+            .and_then(|j| serde_json::from_str::<ora_core::ai::AiConfig>(&j).ok())
+            .unwrap_or_default();
         Self {
+            ai: Arc::new(ora_core::ai::AiSession::new(ai_cfg)),
+            ai_calls: Mutex::default(),
             conns: Mutex::default(),
             next_id: AtomicU64::new(0),
             profiles_lock: Mutex::default(),

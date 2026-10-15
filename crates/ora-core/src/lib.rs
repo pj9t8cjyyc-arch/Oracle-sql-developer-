@@ -2,6 +2,7 @@
 //! streaming query sessions and schema browsing. UI-agnostic and testable
 //! without a database (see [`fake::FakeDb`]).
 
+pub mod ai;
 pub mod catalog;
 pub mod comments;
 pub mod complete;
