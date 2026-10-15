@@ -4,6 +4,7 @@ mod ai;
 mod commands;
 mod compare;
 mod jobs;
+mod sandbox;
 
 fn main() {
     tauri::Builder::default()
@@ -54,6 +55,13 @@ fn main() {
             ai::assist_complete,
             ai::assist_suggest,
             commands::explain_plan,
+            sandbox::sandbox_tables,
+            sandbox::sandbox_plan,
+            sandbox::sandbox_clone_start,
+            sandbox::sandbox_list,
+            sandbox::sandbox_delete,
+            sandbox::sandbox_reset,
+            sandbox::sandbox_run,
             compare::text_diff,
             compare::text_patch,
             compare::text_read_file,

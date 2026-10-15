@@ -129,8 +129,8 @@ export interface ExportOptions {
 }
 export interface ExportRequest { source: ExportSource; path: string; options: ExportOptions; row_limit: number | null; overwrite: boolean }
 export interface ExportReport { rows: number; bytes: number; files: string[]; elapsed_ms: number; rows_per_sec: number; warnings: string[]; cancelled: boolean }
-export interface JobProgress { id: string; kind: "export" | "import" | "validate" | "compare"; rows: number; bytes: number; rejected: number; elapsed_ms: number }
-export interface JobDone { id: string; kind: "export" | "import" | "validate" | "compare"; ok: boolean; cancelled: boolean; error: string | null; report: unknown }
+export interface JobProgress { id: string; kind: "export" | "import" | "validate" | "compare" | "sandbox"; rows: number; bytes: number; rejected: number; elapsed_ms: number }
+export interface JobDone { id: string; kind: "export" | "import" | "validate" | "compare" | "sandbox"; ok: boolean; cancelled: boolean; error: string | null; report: unknown }
 export type JobEvent = { type: "progress"; data: JobProgress } | { type: "done"; data: JobDone };
 
 export type ColKindName = "empty" | "integer" | "decimal" | "date" | "timestamp" | "boolean" | "text";
@@ -275,3 +275,13 @@ export interface ResultSummary { columns: string[]; rows: number; more: boolean;
 export interface Screen { before: string; after: string; statement: string | null; error: string | null; result: ResultSummary | null; plan_findings: string[]; view: string | null }
 export interface AssistSuggestion { kind: "fix" | "optimize" | "next" | "explain"; title: string; detail: string; sql: string | null }
 export interface Assisted<T> { value: T | null; status: "ok" | "no_kb" | "auth" | "cancelled" | "skipped" | "error"; message: string | null; sent: [number, number] | null }
+
+// ---- sandbox (local SQLite copy of Oracle tables)
+export interface SbColMeta { name: string; oracle_type: string; sqlite_type: string; masked: boolean; skipped: boolean }
+export interface SbTableMeta { name: string; source_rows: number | null; rows: number; truncated: boolean; columns: SbColMeta[]; primary_key: string[]; parents: string[]; added_as_parent: boolean }
+export interface CloneSpec { tables: string[]; all: boolean; rows_per_table: number | null; include_fk_parents: boolean; mask: string[]; with_indexes: boolean }
+export interface SandboxMeta { name: string; source: string; owner: string; taken_at: number; spec: CloneSpec; tables: SbTableMeta[] }
+export interface SandboxInfo { meta: SandboxMeta; bytes: number; modified: boolean }
+export interface TableBrief { name: string; rows: number | null }
+export interface ClonePlan { tables: { name: string; source_rows: number | null; rows_to_copy: number | null; added_as_parent: boolean }[]; rows_to_copy: number; estimated: boolean }
+export interface SandboxRun { columns: string[]; rows: (string | null)[][]; affected: number | null; truncated: boolean; elapsed_ms: number; translated: string | null; changes: string[]; wrote: boolean }

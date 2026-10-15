@@ -31,6 +31,8 @@ interface Props {
   onPatch(p: Partial<SheetTab>): void;
   onOpen(connId: string, kind: ObjectKind, owner: string, name: string, parent?: string): void;
   onSchemaOpened(connId: string, owner: string): void;
+  /** Opens the Sandbox page with this SQL ready to run on a local copy. */
+  onSandbox(sql: string): void;
   onError(e: unknown): void;
 }
 
@@ -53,7 +55,7 @@ function FocusDrawer({ api, conn, cache, target, onOpen, onClose, onError }: {
   );
 }
 
-export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchemaOpened, onError }: Props) {
+export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchemaOpened, onSandbox, onError }: Props) {
   const conn = conns.find((c) => c.id === tab.connId);
   const [result, setResult] = useState<Result>();
   const [status, setStatus] = useState("Ready");
@@ -300,6 +302,7 @@ export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchema
         <span className="sep" />
         <button disabled={running} onClick={() => void explain()} title="Shows how Oracle would run the statement, without running it">Explain</button>
         <button className={`assist-pill ${assistOn ? "on" : ""}`} onClick={toggleAssist} aria-pressed={assistOn} title="AI sees this worksheet, your last error and the shape of your last result (column names and counts, never row values) plus the part of the schema it needs. Tab accepts grey text. Click to turn automatic help on or off.">✨ Assist {assistOn ? (astate === "thinking" ? "…" : "on") : "off"}</button>
+        <button disabled={running} onClick={() => { const h = editor.current; if (h) void pickStatement(h.request()).then((s) => onSandbox(s.trim())); }} title="Open this statement in a sandbox: a private SQLite copy, so you can run and change it without touching Oracle">Sandbox</button>
         <button className={asking ? "primary" : ""} onClick={() => setAsking(!asking)} title="Ask a question in your own words">Chat</button>
         <span className="sep" />
         <button onClick={() => tx("commit")} title="Shared by every worksheet on this connection">Commit</button>

@@ -7,6 +7,7 @@ import { mockHistory, record } from "./mock-history";
 import { aiApi, aiListeners } from "./mock-ai";
 import { kindOf, sentSql, splitStatements } from "./split";
 import { askApi } from "./mock-ask";
+import { sandboxApi } from "./mock-sandbox";
 import { compareApi } from "./mock-compare";
 import { graphApi } from "./mock-graph";
 import { transferApi } from "./mock-transfer";
@@ -408,6 +409,17 @@ export const mockApi: Api = {
   ...graphApi(),
   ...aiApi(),
   ...askApi(aiListeners),
+  ...sandboxApi({
+    connName: (c) => connMeta.get(c)?.name ?? c,
+    tables: (c, owner) => {
+      const d = db(c);
+      return (d.objects[owner]?.TABLE ?? []).map((e) => {
+        const ins = d.insights[`${owner}.${e.name}`];
+        return { name: e.name, rows: d.data[e.name]?.total ?? 0, columns: (ins?.columns ?? d.data[e.name]?.columns.map((x) => ({ name: x.name, data_type: "VARCHAR2(30)", nullable: true })) ?? []).map((x) => ({ name: x.name, type: x.data_type, nullable: x.nullable })), parents: [...new Set((ins?.columns ?? []).flatMap((x) => x.foreign_keys.map((f) => f.ref_table)))], pk: ins?.columns.filter((x) => x.primary_key).map((x) => x.name) ?? [] };
+      });
+    },
+    data: (c, table) => { const t = db(c).data[table]; return t ? { columns: t.columns.map((x) => x.name), rows: Array.from({ length: Math.min(t.total, 5000) }, (_, i) => t.row(i)) } : undefined; },
+  }),
   ...compareApi({ rows: (side) => { const src = side.type === "query" ? { type: "query" as const, sql: side.sql } : { type: "table" as const, owner: (side as { owner: string }).owner, table: (side as { table: string }).table, where_clause: null }; const conn = (side as { conn: string }).conn; const d = tableRowsFor(conn, src); return { columns: d.columns, rows: d.rows }; } }),
   historyStatus: () => mockHistory.status(),
   historySetEnabled: (e) => mockHistory.setEnabled(e),

@@ -1,4 +1,4 @@
-import type { Assisted, AssistTrigger, Screen, AssistSuggestion, AskContext, AskInput, ContextPolicy, Plan, SqlIssue, ClientStatus, ConnTest, TnsList, DataDiffOptions, DataSide, SchemaDiff, SidePreview, TextDiffResult, TextOptions, AiConfig, AiEvent, AiStatus, AiTest, ChatRequest, Completions, DossierOptions, KbExported, KbPreview, KbSummary, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
+import type { ClonePlan, CloneSpec, SandboxInfo, SandboxRun, TableBrief, Assisted, AssistTrigger, Screen, AssistSuggestion, AskContext, AskInput, ContextPolicy, Plan, SqlIssue, ClientStatus, ConnTest, TnsList, DataDiffOptions, DataSide, SchemaDiff, SidePreview, TextDiffResult, TextOptions, AiConfig, AiEvent, AiStatus, AiTest, ChatRequest, Completions, DossierOptions, KbExported, KbPreview, KbSummary, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
 import { mockApi } from "./mock";
 
 /** Every call after `connect` is scoped to one connection id, so several databases can be open at once. */
@@ -83,6 +83,14 @@ export interface Api {
   aiChatStart(request: ChatRequest): Promise<string>;
   aiCancel(id: string): Promise<void>;
   explainPlan(conn: string, sql: string): Promise<Plan>;
+  // sandbox: a local SQLite copy of chosen tables; cloning runs as a job (kind "sandbox") and reports through onJob
+  sandboxTables(conn: string, owner: string): Promise<TableBrief[]>;
+  sandboxPlan(conn: string, owner: string, spec: CloneSpec): Promise<ClonePlan>;
+  sandboxCloneStart(conn: string, owner: string, name: string, spec: CloneSpec): Promise<string>;
+  sandboxList(): Promise<SandboxInfo[]>;
+  sandboxDelete(name: string): Promise<void>;
+  sandboxReset(name: string): Promise<boolean>;
+  sandboxRun(name: string, sql: string): Promise<SandboxRun>;
   askContext(conn: string, owner: string, input: AskInput, policy: ContextPolicy): Promise<AskContext>;
   askStart(conn: string, owner: string, input: AskInput, policy: ContextPolicy): Promise<{ id: string; context: AskContext }>;
   askValidate(conn: string, owner: string, sql: string): Promise<SqlIssue[]>;
@@ -174,6 +182,13 @@ async function tauriApi(): Promise<Api> {
     aiChatStart: (request) => invoke("ai_chat_start", { request }),
     aiCancel: (id) => invoke("ai_cancel", { id }),
     explainPlan: (conn, sql) => invoke("explain_plan", { conn, sql }),
+    sandboxTables: (conn, owner) => invoke("sandbox_tables", { conn, owner }),
+    sandboxPlan: (conn, owner, spec) => invoke("sandbox_plan", { conn, owner, spec }),
+    sandboxCloneStart: (conn, owner, name, spec) => invoke("sandbox_clone_start", { conn, owner, name, spec }),
+    sandboxList: () => invoke("sandbox_list"),
+    sandboxDelete: (name) => invoke("sandbox_delete", { name }),
+    sandboxReset: (name) => invoke("sandbox_reset", { name }),
+    sandboxRun: (name, sql) => invoke("sandbox_run", { name, sql }),
     askContext: (conn, owner, input, policy) => invoke("ask_context", { conn, owner, input, policy }),
     askStart: (conn, owner, input, policy) => invoke("ask_start", { conn, owner, input, policy }),
     askValidate: (conn, owner, sql) => invoke("ask_validate", { conn, owner, sql }),

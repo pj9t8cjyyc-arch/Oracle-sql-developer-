@@ -19,6 +19,7 @@ let seq = 0;
 const profiles = new Map<string, { profile: FileProfile; rows: string[][] }>();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+export const cancelJob = (id: string) => void cancelled.add(id);
 export const mockFileText = (path: string) => files.get(path);
 
 // ---- tiny CSV reader (quotes, delimiter sniffing)
@@ -158,7 +159,7 @@ function convertAll(rows: string[][], plan: MappingPlan, max = Infinity): { ok: 
   return { ok, rejects, by };
 }
 
-export function runJob(kind: "export" | "import" | "validate" | "compare", total: number, finish: (id: string) => unknown): string {
+export function runJob(kind: "export" | "import" | "validate" | "compare" | "sandbox", total: number, finish: (id: string) => unknown): string {
   const id = `job${++seq}`;
   (async () => {
     const t0 = performance.now();

@@ -101,7 +101,7 @@ pub(crate) struct Connected {
     index: Arc<Mutex<SearchIndex>>,
     /// Stable identity of user@host:port/service: the same across sessions, unlike the connection id.
     key: String,
-    name: String,
+    pub(crate) name: String,
     /// Opens another session to the same database for exports and imports, so a long job never
     /// blocks the worksheets and has its own transaction. The password is therefore kept in
     /// memory for as long as the connection is open (never written to disk).

@@ -3,6 +3,7 @@ import { apiPromise, isDemo, type Api } from "./api";
 import { InsightCache } from "./badges";
 import { ConnectDialog } from "./components/Dialogs";
 import { ComparePage } from "./components/ComparePage";
+import { SandboxPage } from "./components/SandboxPage";
 import { AiSettings } from "./components/AiSettings";
 import { GraphPage } from "./components/GraphPage";
 import { exposeAiLogin } from "./ai-login";
@@ -22,7 +23,8 @@ interface HistTab { id: "history"; kind: "history"; connId: "" }
 interface PkgTab { id: string; kind: "packages"; connId: string; owner: string; select?: string }
 interface GraphTab { id: string; kind: "graph"; connId: string; owner: string; focus?: string }
 interface CmpTab { id: "compare"; kind: "compare"; connId: "" }
-type Tab = SheetTab | ObjTab | HistTab | PkgTab | GraphTab | CmpTab;
+interface SbTab { id: "sandbox"; kind: "sandbox"; connId: ""; preset?: { sql: string; nonce: number } }
+type Tab = SheetTab | ObjTab | HistTab | PkgTab | GraphTab | CmpTab | SbTab;
 const uuid = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `ws-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
 const sameObj = (a: ObjTarget, b: ObjTarget) => a.owner === b.owner && a.kind === b.kind && a.name === b.name;
@@ -117,6 +119,12 @@ export default function App() {
   const openCompare = useCallback(() => {
     setTabs((ts) => (ts.some((t) => t.id === "compare") ? ts : [...ts, { id: "compare", kind: "compare", connId: "" }]));
     setActiveId("compare");
+  }, []);
+
+  const openSandbox = useCallback((sql?: string) => {
+    const preset = sql ? { sql, nonce: Date.now() } : undefined;
+    setTabs((ts) => (ts.some((t) => t.id === "sandbox") ? ts.map((t) => (t.id === "sandbox" ? { ...t, preset } as Tab : t)) : [...ts, { id: "sandbox", kind: "sandbox", connId: "", preset }]));
+    setActiveId("sandbox");
   }, []);
 
   const openObject = useCallback((connId: string, kind: ObjectKind, owner: string, name: string, parent?: string | null, entry?: ObjectEntry | null, column?: string) => {
@@ -235,6 +243,7 @@ export default function App() {
         <button disabled={conns.length === 0} onClick={() => { const c = connOf(activeConnId ?? "") ?? conns[0]; if (c) openPackages(c.id, ctxOwner(c)); }} title="Every package: members, callers, tables used"><Icon name="package" size={14} /> Packages</button>
         <button disabled={conns.length === 0} onClick={() => { const c = connOf(activeConnId ?? "") ?? conns[0]; if (c) openGraph(c.id, ctxOwner(c)); }} title="What uses what"><Icon name="out" size={14} /> Graph</button>
         <button onClick={openCompare} title="Compare text, data or schemas"><Icon name="columns" size={14} /> Compare</button>
+        <button onClick={() => openSandbox()} title="A private SQLite copy of some tables: run and change things without touching Oracle"><Icon name="database" size={14} /> Sandbox</button>
         <button onClick={() => setAiOpen(true)} title={aiStatus?.signed_in && aiStatus.configured ? "AI is ready" : "Set up the AI connection"}>
           <span className={`dot ${aiStatus?.signed_in && aiStatus.configured ? "ok" : aiStatus?.configured ? "warn" : "off"}`} /> AI
         </button>
@@ -255,12 +264,12 @@ export default function App() {
             {tabs.map((t) => {
               const c = connOf(t.connId);
               const env = c?.profile.environment ?? "dev";
-              const noConn = t.kind === "history" || t.kind === "compare";
+              const noConn = t.kind === "history" || t.kind === "compare" || t.kind === "sandbox";
               return (
                 <div key={t.id} role="tab" aria-selected={t.id === activeId} className={`tab ${t.id === activeId ? "on" : ""}`} onClick={() => setActiveId(t.id)} title={c?.profile.name}>
                   <span className={`tab-stripe env-${env}`} style={noConn ? { background: "var(--accent)" } : undefined} />
-                  {t.kind === "sheet" ? <Icon name="sql" size={14} /> : t.kind === "history" ? <Icon name="history" size={14} /> : t.kind === "compare" ? <Icon name="columns" size={14} /> : t.kind === "packages" ? <Icon name="package" size={14} /> : t.kind === "graph" ? <Icon name="out" size={14} /> : <KindIcon kind={t.target.kind} size={14} />}
-                  <span className="tab-title">{t.kind === "sheet" ? t.title : t.kind === "history" ? "History" : t.kind === "compare" ? "Compare" : t.kind === "packages" ? `Packages · ${t.owner}` : t.kind === "graph" ? `Graph · ${t.owner}` : t.target.name}</span>
+                  {t.kind === "sheet" ? <Icon name="sql" size={14} /> : t.kind === "history" ? <Icon name="history" size={14} /> : t.kind === "compare" ? <Icon name="columns" size={14} /> : t.kind === "sandbox" ? <Icon name="database" size={14} /> : t.kind === "packages" ? <Icon name="package" size={14} /> : t.kind === "graph" ? <Icon name="out" size={14} /> : <KindIcon kind={t.target.kind} size={14} />}
+                  <span className="tab-title">{t.kind === "sheet" ? t.title : t.kind === "history" ? "History" : t.kind === "compare" ? "Compare" : t.kind === "sandbox" ? "Sandbox" : t.kind === "packages" ? `Packages · ${t.owner}` : t.kind === "graph" ? `Graph · ${t.owner}` : t.target.name}</span>
                   {c && conns.length > 1 && <span className="tab-conn">{c.profile.name.split(" ")[0]}</span>}
                   <button className="ghost icon close" aria-label="Close tab" onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}><Icon name="x" size={12} /></button>
                 </div>
@@ -278,7 +287,9 @@ export default function App() {
             )}
             {tabs.map((t) => (
               <div key={t.id} className="pane" hidden={t.id !== activeId}>
-                {t.kind === "compare" ? (
+                {t.kind === "sandbox" ? (
+                  <SandboxPage api={api} conns={conns} preset={t.preset} onError={onError} />
+                ) : t.kind === "compare" ? (
                   <ComparePage api={api} conns={conns} onError={onError}
                     sheets={tabs.filter((x): x is SheetTab => x.kind === "sheet").map((x) => ({ id: x.id, title: x.title, sql: x.sql }))}
                     onWorksheet={(c, o, sql) => newSheet(c, o, sql, true)} />
@@ -303,7 +314,7 @@ export default function App() {
                 ) : t.kind === "sheet" ? (
                   <Worksheet api={api} conns={conns} tab={t} getCache={getCache} onError={onError} onSchemaOpened={onSchemaOpened}
                     onPatch={(p) => setTabs((ts) => ts.map((x) => (x.id === t.id ? ({ ...x, ...p, ...("sql" in p ? { touched: true } : {}) } as Tab) : x)))}
-                    onOpen={(c, k, o, n, parent) => openObject(c, k, o, n, parent)} />
+                    onOpen={(c, k, o, n, parent) => openObject(c, k, o, n, parent)} onSandbox={openSandbox} />
                 ) : connView[t.connId] ? (
                   <ObjectPage api={api} conn={connView[t.connId]} target={t.target} cache={getCache(t.connId)} onError={onError}
                     onOpen={(k, o, n, parent) => openObject(t.connId, k, o, n, parent)}

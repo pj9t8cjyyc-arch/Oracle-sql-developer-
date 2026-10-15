@@ -121,7 +121,7 @@ fn keywords(question: &str) -> Vec<String> {
     out
 }
 
-fn matches_pattern(pat: &str, name: &str) -> bool {
+pub(crate) fn matches_pattern(pat: &str, name: &str) -> bool {
     let (p, n) = (pat.to_uppercase(), name.to_uppercase());
     if !p.contains('*') {
         return p == n;

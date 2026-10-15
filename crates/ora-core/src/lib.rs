@@ -29,6 +29,7 @@ pub mod packages;
 pub mod parse;
 pub mod plan;
 pub mod profile;
+pub mod sandbox;
 pub mod schema;
 pub mod schemadiff;
 pub mod search;

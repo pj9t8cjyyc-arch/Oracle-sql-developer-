@@ -1019,3 +1019,63 @@ fn plsql_exec_output_and_compile_errors_work_on_a_real_database() {
     run("drop procedure ora_ide_it_p");
     run("drop procedure ora_ide_it_bad");
 }
+
+#[test]
+#[ignore]
+fn sandbox_clones_real_tables_into_sqlite_and_runs_oracle_style_sql() {
+    let (db, _) = connect();
+    let owner = env("ORA_USER", "system").to_uppercase();
+    db.run(
+        "create table ora_ide_sb_dept (id number(4) primary key, name varchar2(30), created date)",
+        &[],
+        1,
+    )
+    .ok();
+    db.run("create table ora_ide_sb_emp (id number(6) primary key, dept_id number(4) references ora_ide_sb_dept(id), salary number(10,2), photo blob)", &[], 1).ok();
+    db.run(
+        "insert into ora_ide_sb_dept values (10, 'Sales', date '2021-03-04')",
+        &[],
+        1,
+    )
+    .unwrap();
+    db.run(
+        "insert into ora_ide_sb_emp values (1, 10, 5000.50, null)",
+        &[],
+        1,
+    )
+    .unwrap();
+    db.commit().unwrap();
+    let dir = std::env::temp_dir().join(format!("ora_ide_sb_it_{}", std::process::id()));
+    let spec = ora_core::sandbox::CloneSpec {
+        tables: vec!["ORA_IDE_SB_EMP".into()],
+        include_fk_parents: true,
+        with_indexes: true,
+        ..Default::default()
+    };
+    let meta = ora_core::sandbox::clone_schema(
+        &db,
+        &owner,
+        "it",
+        &dir,
+        "it",
+        &spec,
+        0,
+        &std::sync::atomic::AtomicBool::new(false),
+        &mut |_| {},
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(meta.tables.len(), 2, "the parent table came along");
+    let r = ora_core::sandbox::run(&dir, "it", "select d.name, e.salary, d.created from ora_ide_sb_emp e join ora_ide_sb_dept d on d.id = e.dept_id").unwrap();
+    assert_eq!(
+        r.rows[0],
+        vec![
+            Some("Sales".into()),
+            Some("5000.5".into()),
+            Some("2021-03-04 00:00:00".into())
+        ]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    db.run("drop table ora_ide_sb_emp", &[], 1).ok();
+    db.run("drop table ora_ide_sb_dept", &[], 1).ok();
+}

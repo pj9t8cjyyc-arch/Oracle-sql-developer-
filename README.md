@@ -45,6 +45,19 @@ A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React +
 
 **Limits:** cancel is checked between streamed chunks, so a service that stays silent keeps the call open until the timeout; the HTTP client uses the system proxy settings from the environment, but a custom corporate CA is not configurable yet; only the OpenAI-compatible request format is implemented.
 
+## Status: sandbox (local SQLite clone)
+
+| Piece | State |
+|---|---|
+| **Clone** the whole schema or chosen tables into a SQLite file on this computer (top bar **Sandbox**, or **Sandbox** on a worksheet to open the current statement there). Reads on its own session with a read-only transaction; **nothing is ever written to Oracle**. Built next to the final name and renamed at the end, so a cancelled or failed clone leaves nothing | core tests on a fake database |
+| What is copied: columns (NUMBER(≤18,0) → INTEGER, other NUMBER → NUMERIC, text and dates as text in ISO form), NOT NULL, primary and unique keys, normal indexes, rows (all, or the first N per table). **Tables the chosen ones point to** can be added automatically so joins work; the plan shows them and the estimated rows before anything is copied | tested |
+| **Masking:** columns you list (`SALARY`, `EMPLOYEES.SSN`, `PAY*`) are copied empty, and the values are blanked again on insert so a masked value can never be stored; LOB/binary columns are always empty | tested |
+| **Run SQL there**: SQLite with common Oracle functions registered (NVL, NVL2, DECODE, TO_CHAR, TO_DATE, TO_NUMBER, TRUNC, CEIL, FLOOR, POWER, SQRT, MOD, LPAD, RPAD, INITCAP, ADD_MONTHS, LAST_DAY) and exact rewrites (FROM DUAL, SYSDATE, MINUS, DATE '…', FETCH FIRST / OFFSET → LIMIT, FOR UPDATE); the rewritten SQL is shown. **Refused with a hint** instead of run differently: PL/SQL, MERGE, ROWNUM, CONNECT BY, `(+)`, sequences, LISTAGG | 17 core tests |
+| **Safe to break:** the first statement that changes anything keeps a copy of the clone; **Reset to clone** goes back. `ATTACH`, `PRAGMA`, `VACUUM` and the metadata table are blocked | tested |
+| Against a **real Oracle** | **not run**: ignored test `sandbox_clones_real_tables_into_sqlite_and_runs_oracle_style_sql` |
+
+**Limits:** SQLite is not Oracle: NUMBER above 18 digits or with decimals becomes SQLite's REAL/INTEGER and can lose precision, string comparison and sorting differ (no NLS), dates are text, and results of date arithmetic differ; "first N rows" is not a random sample and can break foreign-key completeness (relationships are recorded, not enforced); triggers, sequences, views, code and grants are not cloned; a clone of a large schema takes as long as reading it and the file is not encrypted, so mask personal data and delete the sandbox when done; row counts in the plan come from optimizer statistics; the demo's sandbox understands only simple SELECT, UPDATE and DELETE.
+
 ## Status: PL/SQL scripts
 
 | Piece | State |
