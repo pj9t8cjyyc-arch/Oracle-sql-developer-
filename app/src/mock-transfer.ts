@@ -19,8 +19,10 @@ let seq = 0;
 const profiles = new Map<string, { profile: FileProfile; rows: string[][] }>();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+export const mockFileText = (path: string) => files.get(path);
+
 // ---- tiny CSV reader (quotes, delimiter sniffing)
-function parseCsv(text: string): { rows: string[][]; delimiter: string } {
+export function parseCsv(text: string): { rows: string[][]; delimiter: string } {
   const t = text.replace(/^﻿/, "");
   const first = t.split(/\r?\n/)[0] ?? "";
   const delimiter = [",", ";", "\t", "|"].map((d) => [d, first.split(d).length] as const).sort((a, b) => b[1] - a[1])[0][0];
@@ -156,7 +158,7 @@ function convertAll(rows: string[][], plan: MappingPlan, max = Infinity): { ok: 
   return { ok, rejects, by };
 }
 
-function runJob(kind: "export" | "import" | "validate", total: number, finish: (id: string) => unknown): string {
+export function runJob(kind: "export" | "import" | "validate" | "compare", total: number, finish: (id: string) => unknown): string {
   const id = `job${++seq}`;
   (async () => {
     const t0 = performance.now();

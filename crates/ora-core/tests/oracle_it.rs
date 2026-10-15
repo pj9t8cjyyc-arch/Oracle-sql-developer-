@@ -852,3 +852,82 @@ fn plscope_gives_exact_calls_and_tables_for_packages_compiled_with_it() {
     drop_quietly(&db, "DROP TABLE it_ps_t PURGE");
     drop_quietly(&db, "DROP TABLE it_ps_u PURGE");
 }
+
+#[test]
+#[ignore]
+fn data_compare_streams_two_tables_by_key_and_schema_compare_sees_a_new_table() {
+    use ora_core::datadiff::{compare, CursorStream, DataDiffOptions};
+    use ora_core::db::Outcome;
+    use std::sync::atomic::AtomicBool;
+    let (db, p) = connect();
+    let owner = p.user.to_uppercase();
+    for t in ["IT_CMP_A", "IT_CMP_B", "IT_CMP_NEW"] {
+        drop_quietly(&db, &format!("DROP TABLE {t} PURGE"));
+    }
+    exec(&db, "CREATE TABLE it_cmp_a (id NUMBER PRIMARY KEY, name VARCHAR2(20), amount NUMBER(10,2), hired DATE)");
+    exec(&db, "CREATE TABLE it_cmp_b (id NUMBER PRIMARY KEY, name VARCHAR2(20), amount NUMBER(10,2), hired DATE)");
+    exec(
+        &db,
+        "INSERT INTO it_cmp_a VALUES (1, 'Ann', 100, DATE '2021-05-01')",
+    );
+    exec(
+        &db,
+        "INSERT INTO it_cmp_a VALUES (2, 'Bob', 200.5, DATE '2021-06-01')",
+    );
+    exec(&db, "INSERT INTO it_cmp_a VALUES (3, 'Cy', NULL, NULL)");
+    exec(
+        &db,
+        "INSERT INTO it_cmp_b VALUES (1, 'Ann', 100.00, DATE '2021-05-01')",
+    );
+    exec(
+        &db,
+        "INSERT INTO it_cmp_b VALUES (2, 'Bob', 201, DATE '2021-06-01')",
+    );
+    exec(&db, "INSERT INTO it_cmp_b VALUES (4, 'Dee', 1, NULL)");
+    exec(
+        &db,
+        "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' NLS_NUMERIC_CHARACTERS = '.,'",
+    );
+    let open = |t: &str| match db.run(&format!("SELECT * FROM {t}"), &[], 100).unwrap() {
+        Outcome::Rows(c) => CursorStream::new(c),
+        _ => panic!("no rows"),
+    };
+    let (mut a, mut b) = (open("it_cmp_a"), open("it_cmp_b"));
+    let o = DataDiffOptions {
+        keys: vec!["ID".into()],
+        ..Default::default()
+    };
+    let r = compare(
+        &mut a,
+        &mut b,
+        &o,
+        None,
+        &AtomicBool::new(false),
+        &mut |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(
+        (r.same, r.changed, r.only_a, r.only_b),
+        (1, 1, 1, 1),
+        "{r:?}"
+    );
+    assert_eq!(r.changed_samples[0].diffs[0].column, "AMOUNT");
+
+    let before = ora_core::knowledge::collect_schema(&db, &owner, 0).unwrap();
+    exec(&db, "CREATE TABLE it_cmp_new (id NUMBER)");
+    let after = ora_core::knowledge::collect_schema(&db, &owner, 0).unwrap();
+    let d = ora_core::schemadiff::compare_schemas(&after, &before, None, None);
+    assert!(
+        d.tables_only_a.contains(&"IT_CMP_NEW".to_string()),
+        "{:?}",
+        d.tables_only_a
+    );
+    assert!(
+        d.script.contains("CREATE TABLE") && d.script.contains("IT_CMP_NEW"),
+        "{}",
+        d.script
+    );
+    for t in ["IT_CMP_A", "IT_CMP_B", "IT_CMP_NEW"] {
+        drop_quietly(&db, &format!("DROP TABLE {t} PURGE"));
+    }
+}

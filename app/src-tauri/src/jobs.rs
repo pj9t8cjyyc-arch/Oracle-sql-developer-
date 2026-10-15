@@ -39,15 +39,15 @@ struct JobDone {
     report: serde_json::Value,
 }
 
-struct JobCtx {
+pub(crate) struct JobCtx {
     id: String,
     kind: &'static str,
     app: AppHandle,
-    cancel: Arc<AtomicBool>,
+    pub(crate) cancel: Arc<AtomicBool>,
 }
 
 impl JobCtx {
-    fn progress(&self, rows: u64, bytes: u64, rejected: u64, elapsed_ms: u64) {
+    pub(crate) fn progress(&self, rows: u64, bytes: u64, rejected: u64, elapsed_ms: u64) {
         let _ = self.app.emit(
             "job-progress",
             JobProgress {
@@ -63,7 +63,7 @@ impl JobCtx {
 }
 
 /// Run `work` on its own thread; its result becomes the `job-done` event.
-fn spawn_job(
+pub(crate) fn spawn_job(
     app: AppHandle,
     state: &State<'_, AppState>,
     kind: &'static str,
@@ -227,7 +227,7 @@ pub struct ExportRequest {
 
 /// Dates, timestamps and numbers must come back in fixed formats whatever the user's session
 /// uses, or a German locale would write `1.234,5` and a US one `01-JAN-20`.
-const EXPORT_NLS: &str = "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF6' NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF6 TZH:TZM' NLS_NUMERIC_CHARACTERS = '.,'";
+pub(crate) const EXPORT_NLS: &str = "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF6' NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF6 TZH:TZM' NLS_NUMERIC_CHARACTERS = '.,'";
 
 fn check_output_path(req: &ExportRequest) -> Result<PathBuf, String> {
     let base = PathBuf::from(&req.path);

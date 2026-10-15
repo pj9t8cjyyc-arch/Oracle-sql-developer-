@@ -192,6 +192,33 @@ fn opt(r: &Row, i: usize) -> Option<String> {
 }
 
 impl Knowledge {
+    /// A knowledge base with nothing in it (for tests and as a starting point).
+    pub fn empty(owner: &str) -> Self {
+        Self {
+            owner: owner.to_string(),
+            taken_at: 0,
+            tables: vec![],
+            triggers: vec![],
+            sequences: vec![],
+            synonyms: vec![],
+            objects: vec![],
+            jobs: vec![],
+            grants: BTreeMap::new(),
+            packages: PackageAnalysis {
+                owner: owner.to_string(),
+                packages: vec![],
+                wrapped: 0,
+                invalid: 0,
+                plscope_packages: 0,
+                scope_error: None,
+            },
+            nodes: vec![],
+            edges: vec![],
+            evidence: vec![],
+            coverage: Coverage::default(),
+        }
+    }
+
     pub fn graph(&self) -> Graph {
         Graph::from_parts(&self.owner, &self.nodes, &self.edges)
     }

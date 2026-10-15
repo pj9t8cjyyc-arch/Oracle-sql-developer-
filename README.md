@@ -2,6 +2,19 @@
 
 A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React + CodeMirror UI.
 
+## Status: compare (text, data, schema)
+
+| Piece | State |
+|---|---|
+| **Text / code diff**: SQL, PL/SQL, DDL or any text, from a file, pasted text, an open worksheet or a database object; line diff (patience) with word-level highlights, side-by-side or unified, context collapsing, copy/save as a unified patch. Options (ignore spaces, case, SQL comments, blank lines) decide what counts as equal; the shown text is always the original | 11 core tests |
+| **Data compare by key**: two files (CSV/TSV/.gz/Excel), queries or tables (also across two connections). Rows are matched by the key you choose (or whole rows), compared column by column; reports same / changed / only in A / only in B, which columns change most, samples, and optionally writes **every difference** to a CSV (one cell per line) | 15 core tests incl. a 20,000-row check against a naive reference, in memory and spilled |
+| Compared by meaning: `1`, `1.0`, `+1` equal; `2021-05-01` = `2021-05-01 00:00:00`; empty = NULL; per-side decimal mark (`1234,5` vs `1234.5`); `01234` stays text, so zip codes are not merged with `1234`. Repeated or empty keys and one-sided columns are reported, never ignored | tested |
+| **Large inputs**: if side A does not fit in memory the two sides are spilled to hash partitions on disk and compared one partition at a time. Measured (release, 1M + 1M rows, 10% changed, excluding file/database reading): **≈ 590k rows/s in memory, ≈ 510k rows/s spilled** | measured |
+| **Schema compare** between two schemas (usually on two databases): tables, columns, keys, indexes, triggers, sequences, and the *text* of packages, procedures, triggers and views (comments, case and spacing ignored). Constraints and indexes are matched by definition, so `SYS_C0012345` names are not differences. A is the reference; a **draft script** makes B look like A, destructive statements are commented out, and nothing is ever run automatically. "Compare text" opens any differing code object in the text diff | 6 core tests |
+| Everything above **against a real Oracle** | **not run**: ignored test `data_compare_streams_two_tables_by_key_and_schema_compare_sees_a_new_table` |
+
+**Limits:** schema compare does not look at defaults, storage, partitioning, grants, comments or column order; the draft `ALTER`/`CREATE` statements are a starting point to review; non-ISO dates (`03/04/2021`) are compared as text because day/month order is ambiguous; Excel files are read fully into memory; text diff refuses more than 200,000 lines per side; the "differences" sample lists are capped at 200 rows each (the file has them all).
+
 ## Status: AI provider layer
 
 | Piece | State |
