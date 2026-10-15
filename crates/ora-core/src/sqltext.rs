@@ -5,7 +5,7 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::guard::{analyze, is_plsql, StatementKind};
+use crate::guard::{analyze, is_block, is_exec, StatementKind};
 use crate::lexer::{lex, Tok, Token};
 use crate::parse::references;
 use crate::profile::Environment;
@@ -49,6 +49,7 @@ pub fn split_statements(text: &str) -> Vec<Stmt> {
     let mut first_tok: Option<usize> = None; // index of the first token of the current statement
     let mut depth = 0i32;
     let mut plsql = false;
+    let mut skip_until = 0usize; // tokens before this char index belong to an already flushed statement
 
     let flush = |from: usize, to: usize, out: &mut Vec<Stmt>| {
         let slice: String = chars[from..to.min(chars.len())].iter().collect();
@@ -70,11 +71,26 @@ pub fn split_statements(text: &str) -> Vec<Stmt> {
     };
 
     for (i, t) in toks.iter().enumerate() {
+        if t.start < skip_until {
+            continue;
+        }
         if first_tok.is_none() {
             first_tok = Some(i);
             let rest: Vec<Tok> = toks[i..].iter().take(8).map(|x| x.tok.clone()).collect();
-            plsql = is_plsql(&rest);
+            plsql = is_block(&rest);
             depth = 0;
+            // SQL*Plus `EXEC` is a one-line command: it ends at the end of its line.
+            if is_exec(&rest) {
+                let eol = chars[t.start..]
+                    .iter()
+                    .position(|c| *c == '\n')
+                    .map_or(chars.len(), |p| t.start + p);
+                flush(seg_start, eol, &mut out);
+                seg_start = eol;
+                skip_until = eol;
+                first_tok = None;
+                continue;
+            }
         }
         match &t.tok {
             Tok::Punct('(') => depth += 1,
@@ -398,6 +414,35 @@ mod tests {
             texts("create or replace procedure p as begin null; end;").len(),
             1
         );
+    }
+
+    #[test]
+    fn exec_ends_at_its_line_and_does_not_swallow_what_follows() {
+        let v = texts("exec raise_pay(1, 5);\nselect 1 from dual;\nexec p\n");
+        assert_eq!(
+            v,
+            vec!["exec raise_pay(1, 5);", "select 1 from dual", "exec p"],
+            "{v:?}"
+        );
+        let v = texts("begin null; end;\n/\nexec a;\ncall b(1);\nselect 2 from dual;");
+        assert_eq!(v.len(), 4, "{v:?}");
+        assert_eq!(v[2], "call b(1)");
+    }
+
+    /// The browser demo (app/src/split.ts) is checked against the same cases, so it splits like the real thing.
+    #[test]
+    fn shared_split_cases_match_the_fixture() {
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../tests/fixtures/split_cases.json")).unwrap();
+        assert!(cases.len() >= 10);
+        for c in &cases {
+            let text = c["text"].as_str().unwrap();
+            let got: Vec<serde_json::Value> = split_statements(text)
+                .iter()
+                .map(|s| serde_json::json!({"text": s.text, "kind": serde_json::to_value(s.kind).unwrap(), "sent": analyze(&s.text, Environment::Dev).sql}))
+                .collect();
+            assert_eq!(serde_json::Value::Array(got), c["statements"], "{text:?}");
+        }
     }
 
     #[test]

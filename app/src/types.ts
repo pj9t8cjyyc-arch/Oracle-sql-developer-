@@ -13,8 +13,11 @@ export interface Analysis {
 export type RunResult =
   | { kind: "needs_confirmation"; analysis: Analysis }
   | { kind: "rows"; handle: number; columns: Column[]; rows: Row[]; done: boolean; analysis: Analysis }
-  | { kind: "affected"; count: number; analysis: Analysis }
-  | { kind: "done"; analysis: Analysis };
+  | { kind: "affected"; count: number; analysis: Analysis; output: string[] }
+  | { kind: "done"; analysis: Analysis; output: string[]; compile: CompileReport | null };
+export interface CompileIssue { line: number; column: number; severity: string; text: string }
+/** A stored unit was created but does not compile. */
+export interface CompileReport { object: string; issues: CompileIssue[]; has_errors: boolean }
 export interface Page { rows: Row[]; done: boolean; truncated: boolean }
 export type Environment = "dev" | "test" | "prod";
 export type ConnKind = "easy" | "tns" | "connect_string";
@@ -126,8 +129,8 @@ export interface ExportOptions {
 }
 export interface ExportRequest { source: ExportSource; path: string; options: ExportOptions; row_limit: number | null; overwrite: boolean }
 export interface ExportReport { rows: number; bytes: number; files: string[]; elapsed_ms: number; rows_per_sec: number; warnings: string[]; cancelled: boolean }
-export interface JobProgress { id: string; kind: "export" | "import" | "validate" | "compare"; rows: number; bytes: number; rejected: number; elapsed_ms: number }
-export interface JobDone { id: string; kind: "export" | "import" | "validate" | "compare"; ok: boolean; cancelled: boolean; error: string | null; report: unknown }
+export interface JobProgress { id: string; kind: "export" | "import" | "validate" | "compare" | "sandbox"; rows: number; bytes: number; rejected: number; elapsed_ms: number }
+export interface JobDone { id: string; kind: "export" | "import" | "validate" | "compare" | "sandbox"; ok: boolean; cancelled: boolean; error: string | null; report: unknown }
 export type JobEvent = { type: "progress"; data: JobProgress } | { type: "done"; data: JobDone };
 
 export type ColKindName = "empty" | "integer" | "decimal" | "date" | "timestamp" | "boolean" | "text";
@@ -248,3 +251,42 @@ export interface SchemaDiff {
   owner_a: string; owner_b: string; tables_only_a: string[]; tables_only_b: string[]; tables: SchemaTableDiff[]; sequences: SchemaChange[];
   code: CodeDiff[]; code_compared: boolean; summary: SchemaSummary; script: string; notes: string[];
 }
+
+// ---- explain plan
+export interface PlanNode {
+  id: number; parent_id: number | null; depth: number; operation: string; object_owner: string | null; object_name: string | null; object_alias: string | null;
+  cost: number | null; self_cost: number | null; cost_pct: number | null; rows: number | null; bytes: number | null; seconds: number | null;
+  access: string | null; filter: string | null; children: number[]; hot: boolean;
+}
+export interface PlanFinding { severity: "high" | "warn" | "info"; code: string; title: string; detail: string; steps: number[]; suggestion: string | null }
+export interface Plan { nodes: PlanNode[]; total_cost: number | null; notes: string[]; text: string; findings: PlanFinding[] }
+
+// ---- Ask (schema-aware AI)
+export type AskMode = "ask" | "write_sql" | "explain" | "fix";
+export interface AskInput { mode: AskMode; question: string; sql: string | null; error: string | null; history: ChatMessage[] }
+export interface ContextPolicy { include_comments: boolean; include_history: boolean; exclude: string[]; max_tokens: number; max_objects: number }
+export interface CtxObject { id: string; why: string; score: number }
+export interface AskContext { text: string; objects: CtxObject[]; join_paths: string[]; tokens_estimate: number; truncated: boolean; excluded: number }
+export interface SqlIssue { severity: "error" | "warn"; message: string }
+
+// ---- proactive assistance
+export type AssistTrigger = "complete" | "error" | "result" | "review";
+export interface ResultSummary { columns: string[]; rows: number; more: boolean; elapsed_ms: number }
+export interface Screen { before: string; after: string; statement: string | null; error: string | null; result: ResultSummary | null; plan_findings: string[]; view: string | null }
+export interface AssistSuggestion { kind: "fix" | "optimize" | "next" | "explain"; title: string; detail: string; sql: string | null }
+export interface Assisted<T> { value: T | null; status: "ok" | "no_kb" | "auth" | "cancelled" | "skipped" | "error"; message: string | null; sent: [number, number] | null }
+
+// ---- sandbox (local SQLite copy of Oracle tables)
+export interface SbColMeta { name: string; oracle_type: string; sqlite_type: string; masked: boolean; skipped: boolean }
+export interface SbTableMeta { name: string; source_rows: number | null; rows: number; truncated: boolean; columns: SbColMeta[]; primary_key: string[]; parents: string[]; added_as_parent: boolean }
+export interface CloneSpec { tables: string[]; all: boolean; rows_per_table: number | null; include_fk_parents: boolean; mask: string[]; with_indexes: boolean }
+export interface SandboxMeta { name: string; source: string; owner: string; taken_at: number; spec: CloneSpec; tables: SbTableMeta[] }
+export interface SandboxInfo { meta: SandboxMeta; bytes: number; modified: boolean }
+export interface TableBrief { name: string; rows: number | null }
+export interface ClonePlan { tables: { name: string; source_rows: number | null; rows_to_copy: number | null; added_as_parent: boolean }[]; rows_to_copy: number; estimated: boolean }
+export interface SandboxRun { columns: string[]; rows: (string | null)[][]; affected: number | null; truncated: boolean; elapsed_ms: number; translated: string | null; changes: string[]; wrote: boolean }
+
+// ---- updates
+export interface UpdateStatus { enabled: boolean; current_version: string; endpoint: string | null; custom_endpoint: boolean; auto_check: boolean }
+export interface UpdateInfo { version: string; notes: string | null; date: string | null }
+export interface UpdateProgress { downloaded: number; total: number | null }

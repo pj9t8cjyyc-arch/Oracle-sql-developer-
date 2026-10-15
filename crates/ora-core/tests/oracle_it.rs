@@ -962,3 +962,120 @@ fn other_connection_methods_reach_the_database_and_report_what_they_reached() {
     );
     assert!(d.major.is_some() && !d.session_user.is_empty());
 }
+
+#[test]
+#[ignore]
+fn explain_plan_reads_the_plan_and_cleans_up() {
+    let (db, _) = connect();
+    let p = ora_core::plan::explain(&db, "SELECT * FROM dual WHERE dummy = 'X'").expect("explain");
+    assert!(
+        !p.nodes.is_empty() && p.nodes[0].operation.contains("SELECT"),
+        "{:?}",
+        p.nodes
+    );
+    assert!(!p.text.is_empty());
+    // The statement was not run and no plan rows are left behind for this statement id.
+    let (_, rows) = collect(
+        &db,
+        "SELECT COUNT(*) FROM plan_table WHERE statement_id LIKE 'ORAIDE%'",
+        &[],
+    )
+    .unwrap();
+    assert!(format!("{:?}", rows[0][0]).contains('0'), "{:?}", rows[0]);
+}
+
+#[test]
+#[ignore]
+fn plsql_exec_output_and_compile_errors_work_on_a_real_database() {
+    let (db, _) = connect();
+    let m = QueryManager::new(Arc::new(db), ora_core::profile::Environment::Dev);
+    let run = |sql: &str| {
+        m.run(
+            sql,
+            RunOptions {
+                confirmed: true,
+                ..Default::default()
+            },
+        )
+        .expect(sql)
+    };
+    // A procedure that prints, called through the SQL*Plus shorthand.
+    run("create or replace procedure ora_ide_it_p as begin dbms_output.put_line('hello'); end;");
+    let RunResult::Done { output, .. } = run("exec ora_ide_it_p;") else {
+        panic!()
+    };
+    assert_eq!(output, vec!["hello"]);
+    // A procedure that does not compile is created and its errors are reported with line and column.
+    let RunResult::Done { compile, .. } =
+        run("create or replace procedure ora_ide_it_bad as begin undefined_var := 1; end;")
+    else {
+        panic!()
+    };
+    let c = compile.expect("compile errors");
+    assert!(
+        c.has_errors && c.issues.iter().any(|i| i.text.contains("PLS-00201")),
+        "{c:?}"
+    );
+    run("drop procedure ora_ide_it_p");
+    run("drop procedure ora_ide_it_bad");
+}
+
+#[test]
+#[ignore]
+fn sandbox_clones_real_tables_into_sqlite_and_runs_oracle_style_sql() {
+    let (db, _) = connect();
+    let owner = env("ORA_USER", "system").to_uppercase();
+    db.run(
+        "create table ora_ide_sb_dept (id number(4) primary key, name varchar2(30), created date)",
+        &[],
+        1,
+    )
+    .ok();
+    db.run("create table ora_ide_sb_emp (id number(6) primary key, dept_id number(4) references ora_ide_sb_dept(id), salary number(10,2), photo blob)", &[], 1).ok();
+    db.run(
+        "insert into ora_ide_sb_dept values (10, 'Sales', date '2021-03-04')",
+        &[],
+        1,
+    )
+    .unwrap();
+    db.run(
+        "insert into ora_ide_sb_emp values (1, 10, 5000.50, null)",
+        &[],
+        1,
+    )
+    .unwrap();
+    db.commit().unwrap();
+    let dir = std::env::temp_dir().join(format!("ora_ide_sb_it_{}", std::process::id()));
+    let spec = ora_core::sandbox::CloneSpec {
+        tables: vec!["ORA_IDE_SB_EMP".into()],
+        include_fk_parents: true,
+        with_indexes: true,
+        ..Default::default()
+    };
+    let meta = ora_core::sandbox::clone_schema(
+        &db,
+        &owner,
+        "it",
+        &dir,
+        "it",
+        &spec,
+        0,
+        &std::sync::atomic::AtomicBool::new(false),
+        &mut |_| {},
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(meta.tables.len(), 2, "the parent table came along");
+    let r = ora_core::sandbox::run(&dir, "it", "select d.name, e.salary, d.created from ora_ide_sb_emp e join ora_ide_sb_dept d on d.id = e.dept_id").unwrap();
+    assert_eq!(
+        r.rows[0],
+        vec![
+            Some("Sales".into()),
+            Some("5000.5".into()),
+            Some("2021-03-04 00:00:00".into())
+        ]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    db.run("drop table ora_ide_sb_emp", &[], 1).ok();
+    db.run("drop table ora_ide_sb_dept", &[], 1).ok();
+}

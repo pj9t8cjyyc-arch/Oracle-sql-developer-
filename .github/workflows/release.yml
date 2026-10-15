@@ -1,0 +1,90 @@
+name: release
+# Builds the Windows MSI and the macOS app/DMG when a version tag is pushed, and attaches them to a
+# DRAFT GitHub release for a person to review and publish. Signing and updates switch on by themselves
+# when their secrets exist; without them the installers are built unsigned. See docs/RELEASING.md.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag, tauri.conf.json, Cargo.toml and package.json must carry the same version
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          conf=$(jq -r .version app/src-tauri/tauri.conf.json)
+          crate=$(grep -m1 '^version' app/src-tauri/Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')
+          pkg=$(jq -r .version app/package.json)
+          echo "tag=$want conf=$conf crate=$crate package=$pkg"
+          [ "$want" = "$conf" ] && [ "$want" = "$crate" ] && [ "$want" = "$pkg" ] || { echo "::error::version mismatch"; exit 1; }
+      - name: The updater public key must be filled in when update signing is on
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -n "$KEY" ] && grep -q REPLACE_WITH app/src-tauri/tauri.updater.conf.json; then
+            echo "::error::set the public key in app/src-tauri/tauri.updater.conf.json"; exit 1; fi
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: "--bundles msi"
+          - os: macos-latest
+            args: "--target universal-apple-darwin --bundles app,dmg"
+    runs-on: ${{ matrix.os }}
+    env:
+      HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+      HAS_WIN_CERT: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: app/package-lock.json }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: "app/src-tauri -> target" }
+      - run: npm ci
+        working-directory: app
+      - name: Import the Windows code-signing certificate (optional)
+        if: runner.os == 'Windows' && env.HAS_WIN_CERT == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          New-Item -ItemType directory -Path certificate | Out-Null
+          [IO.File]::WriteAllBytes("certificate/cert.pfx", [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $pw = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath certificate/cert.pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
+          @{ bundle = @{ windows = @{ certificateThumbprint = $cert.Thumbprint; digestAlgorithm = "sha256"; timestampUrl = "http://timestamp.digicert.com" } } } | ConvertTo-Json -Depth 5 | Set-Content app/src-tauri/tauri.sign-win.conf.json
+          "WIN_SIGN_ARGS=--config src-tauri/tauri.sign-win.conf.json" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # in-app update signing
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS signing and notarization
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: app
+          tagName: ${{ github.ref_name }}
+          releaseName: "Ora IDE ${{ github.ref_name }}"
+          releaseBody: "Draft: check the installers, then publish. Windows: MSI. macOS: DMG (universal)."
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }} ${{ env.HAS_UPDATER_KEY == 'true' && '--features updater --config src-tauri/tauri.updater.conf.json' || '' }} ${{ env.WIN_SIGN_ARGS }}

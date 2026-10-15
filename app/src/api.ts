@@ -1,4 +1,4 @@
-import type { ClientStatus, ConnTest, TnsList, DataDiffOptions, DataSide, SchemaDiff, SidePreview, TextDiffResult, TextOptions, AiConfig, AiEvent, AiStatus, AiTest, ChatRequest, Completions, DossierOptions, KbExported, KbPreview, KbSummary, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
+import type { UpdateInfo, UpdateProgress, UpdateStatus, ClonePlan, CloneSpec, SandboxInfo, SandboxRun, TableBrief, Assisted, AssistTrigger, Screen, AssistSuggestion, AskContext, AskInput, ContextPolicy, Plan, SqlIssue, ClientStatus, ConnTest, TnsList, DataDiffOptions, DataSide, SchemaDiff, SidePreview, TextDiffResult, TextOptions, AiConfig, AiEvent, AiStatus, AiTest, ChatRequest, Completions, DossierOptions, KbExported, KbPreview, KbSummary, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
 import { mockApi } from "./mock";
 
 /** Every call after `connect` is scoped to one connection id, so several databases can be open at once. */
@@ -82,6 +82,28 @@ export interface Api {
   aiTest(): Promise<AiTest>;
   aiChatStart(request: ChatRequest): Promise<string>;
   aiCancel(id: string): Promise<void>;
+  explainPlan(conn: string, sql: string): Promise<Plan>;
+  // in-app updates (release builds only; other builds report that updates are not enabled)
+  updateStatus(): Promise<UpdateStatus>;
+  updateSet(autoCheck: boolean, endpoint: string | null): Promise<UpdateStatus>;
+  updateCheck(): Promise<UpdateInfo | null>;
+  /** Downloads, verifies and installs, then restarts the app. */
+  updateInstall(): Promise<void>;
+  onUpdateProgress(cb: (p: UpdateProgress) => void): Promise<() => void>;
+  // sandbox: a local SQLite copy of chosen tables; cloning runs as a job (kind "sandbox") and reports through onJob
+  sandboxTables(conn: string, owner: string): Promise<TableBrief[]>;
+  sandboxPlan(conn: string, owner: string, spec: CloneSpec): Promise<ClonePlan>;
+  sandboxCloneStart(conn: string, owner: string, name: string, spec: CloneSpec): Promise<string>;
+  sandboxList(): Promise<SandboxInfo[]>;
+  sandboxDelete(name: string): Promise<void>;
+  sandboxReset(name: string): Promise<boolean>;
+  sandboxRun(name: string, sql: string): Promise<SandboxRun>;
+  askContext(conn: string, owner: string, input: AskInput, policy: ContextPolicy): Promise<AskContext>;
+  askStart(conn: string, owner: string, input: AskInput, policy: ContextPolicy): Promise<{ id: string; context: AskContext }>;
+  askValidate(conn: string, owner: string, sql: string): Promise<SqlIssue[]>;
+  askExtractSql(answer: string): Promise<string[]>;
+  assistComplete(conn: string, owner: string, screen: Screen, policy: ContextPolicy): Promise<Assisted<string>>;
+  assistSuggest(conn: string, owner: string, screen: Screen, trigger: AssistTrigger, policy: ContextPolicy): Promise<Assisted<AssistSuggestion[]>>;
   onAi(cb: (e: AiEvent) => void): Promise<() => void>;
   // compare (text, data by key, schema); data compare runs as a job and reports through onJob
   textDiff(a: string, b: string, options: TextOptions, context: number | null): Promise<TextDiffResult>;
@@ -166,6 +188,28 @@ async function tauriApi(): Promise<Api> {
     aiTest: () => invoke("ai_test"),
     aiChatStart: (request) => invoke("ai_chat_start", { request }),
     aiCancel: (id) => invoke("ai_cancel", { id }),
+    explainPlan: (conn, sql) => invoke("explain_plan", { conn, sql }),
+    updateStatus: () => invoke("update_status"),
+    updateSet: (autoCheck, endpoint) => invoke("update_set", { autoCheck, endpoint }),
+    updateCheck: () => invoke("update_check"),
+    updateInstall: () => invoke("update_install"),
+    async onUpdateProgress(cb) {
+      const { listen } = await import("@tauri-apps/api/event");
+      return listen("update-progress", (e) => cb(e.payload as never));
+    },
+    sandboxTables: (conn, owner) => invoke("sandbox_tables", { conn, owner }),
+    sandboxPlan: (conn, owner, spec) => invoke("sandbox_plan", { conn, owner, spec }),
+    sandboxCloneStart: (conn, owner, name, spec) => invoke("sandbox_clone_start", { conn, owner, name, spec }),
+    sandboxList: () => invoke("sandbox_list"),
+    sandboxDelete: (name) => invoke("sandbox_delete", { name }),
+    sandboxReset: (name) => invoke("sandbox_reset", { name }),
+    sandboxRun: (name, sql) => invoke("sandbox_run", { name, sql }),
+    askContext: (conn, owner, input, policy) => invoke("ask_context", { conn, owner, input, policy }),
+    askStart: (conn, owner, input, policy) => invoke("ask_start", { conn, owner, input, policy }),
+    askValidate: (conn, owner, sql) => invoke("ask_validate", { conn, owner, sql }),
+    askExtractSql: (answer) => invoke("ask_extract_sql", { answer }),
+    assistComplete: (conn, owner, screen, policy) => invoke("assist_complete", { conn, owner, screen, policy, model: null }),
+    assistSuggest: (conn, owner, screen, trigger, policy) => invoke("assist_suggest", { conn, owner, screen, trigger, policy, model: null }),
     textDiff: (a, b, options, context) => invoke("text_diff", { a, b, options, context }),
     textPatch: (a, b, options, aName, bName, context) => invoke("text_patch", { a, b, options, aName, bName, context }),
     textReadFile: (path) => invoke("text_read_file", { path }),

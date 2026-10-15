@@ -4,12 +4,16 @@
 // none of this runs in the real app.
 import type { Api } from "./api";
 import { mockHistory, record } from "./mock-history";
-import { aiApi } from "./mock-ai";
+import { aiApi, aiListeners } from "./mock-ai";
+import { kindOf, sentSql, splitStatements } from "./split";
+import { askApi } from "./mock-ask";
+import { sandboxApi } from "./mock-sandbox";
+import { updateApi } from "./mock-update";
 import { compareApi } from "./mock-compare";
 import { graphApi } from "./mock-graph";
 import { transferApi } from "./mock-transfer";
 import type {
-  Analysis, Column, ColumnInsight, Completions, ConnInfo, Hit, ObjectDeps, ObjectEntry, ObjectKind, Profile, Row, RunResult, SeqUse,
+  Analysis, Column, ColumnInsight, Completions, ConnInfo, Hit, ObjectDeps, ObjectEntry, ObjectKind, Profile, CompileReport, Row, RunResult, SeqUse,
   SequenceInfo, Suggestion, TableInsight, TableRef, TriggerInfo,
 } from "./types";
 
@@ -284,13 +288,36 @@ const ddlFor = (d: Db, owner: string, name: string, kind: string): string => {
 };
 
 function analyze(sql: string): Analysis {
-  const s = sql.trim().replace(/;$/, "");
+  const k = kindOf(sql);
+  const s = sentSql(sql);
   const l = s.toLowerCase();
-  const kind = l.startsWith("select") || l.startsWith("with") ? "select" : l.split(/\s+/)[0] || "empty";
+  const kind = k === "empty" ? "empty" : k;
   const warnings: Analysis["warnings"] = [];
   if ((kind === "update" || kind === "delete") && !/\bwhere\b/.test(l)) warnings.push({ severity: "danger", message: "No WHERE clause: this will affect every row in the table." });
-  if (kind === "drop" || kind === "truncate") warnings.push({ severity: "danger", message: "DROP/TRUNCATE is permanent and cannot be rolled back." });
+  if (/^\s*(drop|truncate)\b/.test(l)) warnings.push({ severity: "danger", message: "DROP/TRUNCATE is permanent and cannot be rolled back." });
+  if (kind === "plsql") warnings.push({ severity: "warning", message: "PL/SQL may modify data or commit; its effects cannot be inferred statically." });
   return { kind, sql: s, warnings, requires_confirmation: warnings.some((w) => w.severity === "danger"), blocked: null, read_only: kind === "select" };
+}
+
+const procOutput = new Map<string, string[]>();
+const putLines = (sql: string): string[] => [...sql.matchAll(/dbms_output\.put_line\s*\(\s*((?:'(?:[^']|'')*'|[^)])*)\)/gi)].map((m) => [...m[1].matchAll(/'((?:[^']|'')*)'|(sql%rowcount)/gi)].map((p) => (p[2] ? "1" : p[1].replace(/''/g, "'"))).join(""));
+
+/** Demo stand-in for running PL/SQL (not Oracle): remembers what each created procedure prints, replays it when called, and fakes a compile error for the marker name `undefined_var`. */
+function runPlsql(sql: string): { output: string[]; compile: CompileReport | null } {
+  const unit = /^\s*create\s+(?:or\s+replace\s+)?(?:editionable\s+)?(procedure|function|package(?:\s+body)?|trigger|type(?:\s+body)?)\s+(?:(\w+)\.)?(\w+)/i.exec(sql);
+  if (unit) {
+    if (/\bundefined_var\b/i.test(sql)) {
+      const lines = sql.split("\n");
+      const line = lines.findIndex((l) => /undefined_var/i.test(l)) + 1;
+      const col = lines[line - 1].search(/undefined_var/i) + 1;
+      return { output: [], compile: { object: `${unit[1].toUpperCase()} ${unit[2] ? unit[2].toUpperCase() + "." : ""}${unit[3].toUpperCase()}`, has_errors: true, issues: [{ line, column: col, severity: "ERROR", text: "PLS-00201: identifier 'UNDEFINED_VAR' must be declared" }, { line, column: col, severity: "ERROR", text: "PL/SQL: Statement ignored" }] } };
+    }
+    procOutput.set(unit[3].toUpperCase(), putLines(sql));
+    return { output: [], compile: null };
+  }
+  const output = putLines(sql);
+  for (const [name, lines] of procOutput) if (new RegExp(`\\b${name}\\b`, "i").test(sql)) output.push(...lines);
+  return { output, compile: null };
 }
 
 const cursors = new Map<number, { table: Data; pos: number }>();
@@ -382,6 +409,19 @@ export const mockApi: Api = {
   ...transfer,
   ...graphApi(),
   ...aiApi(),
+  ...askApi(aiListeners),
+  ...updateApi(),
+  ...sandboxApi({
+    connName: (c) => connMeta.get(c)?.name ?? c,
+    tables: (c, owner) => {
+      const d = db(c);
+      return (d.objects[owner]?.TABLE ?? []).map((e) => {
+        const ins = d.insights[`${owner}.${e.name}`];
+        return { name: e.name, rows: d.data[e.name]?.total ?? 0, columns: (ins?.columns ?? d.data[e.name]?.columns.map((x) => ({ name: x.name, data_type: "VARCHAR2(30)", nullable: true })) ?? []).map((x) => ({ name: x.name, type: x.data_type, nullable: x.nullable })), parents: [...new Set((ins?.columns ?? []).flatMap((x) => x.foreign_keys.map((f) => f.ref_table)))], pk: ins?.columns.filter((x) => x.primary_key).map((x) => x.name) ?? [] };
+      });
+    },
+    data: (c, table) => { const t = db(c).data[table]; return t ? { columns: t.columns.map((x) => x.name), rows: Array.from({ length: Math.min(t.total, 5000) }, (_, i) => t.row(i)) } : undefined; },
+  }),
   ...compareApi({ rows: (side) => { const src = side.type === "query" ? { type: "query" as const, sql: side.sql } : { type: "table" as const, owner: (side as { owner: string }).owner, table: (side as { table: string }).table, where_clause: null }; const conn = (side as { conn: string }).conn; const d = tableRowsFor(conn, src); return { columns: d.columns, rows: d.rows }; } }),
   historyStatus: () => mockHistory.status(),
   historySetEnabled: (e) => mockHistory.setEnabled(e),
@@ -440,7 +480,13 @@ export const mockApi: Api = {
     await sleep(60);
     const analysis = analyze(sql);
     if (analysis.requires_confirmation && !confirmed) return { kind: "needs_confirmation", analysis };
-    if (analysis.kind !== "select") { rec("ok", 3, null); return { kind: "affected", count: 3, analysis }; }
+    if (analysis.kind === "plsql") {
+      const r = runPlsql(analysis.sql);
+      rec(r.compile?.has_errors ? "error" : "ok", null, r.compile?.has_errors ? `${r.compile.object} created with compilation errors` : null);
+      return { kind: "done", analysis, output: r.output, compile: r.compile };
+    }
+    if (analysis.kind === "ddl") { rec("ok", null, null); return { kind: "done", analysis, output: [], compile: null }; }
+    if (analysis.kind !== "select") { rec("ok", 3, null); return { kind: "affected", count: 3, analysis, output: [] }; }
     const name = Object.keys(d.data).find((k) => new RegExp(`\\b${k}\\b`, "i").test(analysis.sql));
     if (!name) { rec("error", null, "ORA-00942: table or view does not exist"); throw "ORA-00942: table or view does not exist"; }
     const r = rowsResult(d.data[name], analysis, pageSize);
@@ -507,17 +553,7 @@ export const mockApi: Api = {
   complete: async (c, sql, cursor, owner) => mockComplete(db(c), sql, cursor, owner),
   references: async (sql) => mockRefs(sql),
   async statements(sql) {
-    const out: { start: number; end: number; kind: string; text: string }[] = [];
-    let pos = 0;
-    for (const part of sql.split(";")) {
-      const start = pos;
-      pos += part.length + 1;
-      const text = part.trim();
-      if (!text.replace(/--.*$/gm, "").trim()) continue;
-      const lead = part.length - part.trimStart().length;
-      out.push({ start: start + lead, end: start + lead + text.length, kind: /^\s*(\w+)/.exec(text)?.[1]?.toLowerCase() ?? "other", text });
-    }
-    return out;
+    return splitStatements(sql).map((s) => ({ start: s.start, end: s.end, kind: s.kind, text: s.text }));
   },
   async searchObjects(c, text, owner, kinds, limit) {
     const words = text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);

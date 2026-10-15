@@ -53,6 +53,10 @@ pub trait Database: Send + Sync {
             "this backend does not support bulk insert".into(),
         ))
     }
+    /// Lines the last statements wrote with `DBMS_OUTPUT.PUT_LINE`, removed from the session buffer.
+    fn dbms_output(&self) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
     /// Interrupt the statement currently executing on this connection.
     fn cancel(&self) -> Result<()> {
         Ok(())

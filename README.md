@@ -41,9 +41,71 @@ A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React +
 | Streaming client for the UI (`ai-client.ts`): events that arrive before the call is acknowledged are kept, other calls' events ignored, cancel works before the id is known, auth errors are a distinct type | 5 checks run in Node |
 | Everything above **against your real endpoint** | **not run**: needs your URL, model and token. `AI_BASE_URL=… AI_MODEL=… AI_TOKEN=… cargo test -p ora-core --test ai_it -- --ignored --nocapture` checks it in one go |
 
-**Nothing is sent yet.** This layer only carries a chat. What may go into a prompt (schema only, statistics, sample rows) is decided by the context builder, which comes next, and defaults to metadata only.
+**What may go into a prompt** is decided by the context builder (next section); it sends schema metadata only.
 
 **Limits:** cancel is checked between streamed chunks, so a service that stays silent keeps the call open until the timeout; the HTTP client uses the system proxy settings from the environment, but a custom corporate CA is not configurable yet; only the OpenAI-compatible request format is implemented.
+
+## Status: installers and updates
+
+| Piece | State |
+|---|---|
+| **Windows MSI** (WiX, per-machine, fixed `upgradeCode` so upgrades replace the old version) and **macOS universal DMG** (hardened runtime, entitlements that let it load the Oracle Instant Client), built by the `release` workflow when a `v*` tag is pushed; attached to a **draft** GitHub release | configuration checked in CI (`npm run check:release`); **never built or installed on Windows/macOS yet** |
+| **Signing:** macOS Developer ID + notarization (Apple secrets) and optional Windows certificate; installers are built unsigned when the secrets are missing | wired, **not exercised** |
+| **In-app updates** (feature `updater`): checks a few seconds after start, shows an **Update x.y.z** button, downloads, verifies the **signature against the key built into the app**, installs and restarts. Address can be pointed at an internal server (https only); automatic checks can be switched off | address rules tested; flow verified in demo mode; **not tried against a real feed** |
+| Release guide: keys, secrets, cutting a release, internal update servers, Instant Client, WebView2, verification commands | `docs/RELEASING.md` |
+
+**Limits:** needs your signing key, Apple/Windows certificates and a test on clean machines (see `docs/RELEASING.md`); Oracle Instant Client is not bundled; full installer download on every update (no patches); the icon is upscaled from 256 px.
+
+## Status: sandbox (local SQLite clone)
+
+| Piece | State |
+|---|---|
+| **Clone** the whole schema or chosen tables into a SQLite file on this computer (top bar **Sandbox**, or **Sandbox** on a worksheet to open the current statement there). Reads on its own session with a read-only transaction; **nothing is ever written to Oracle**. Built next to the final name and renamed at the end, so a cancelled or failed clone leaves nothing | core tests on a fake database |
+| What is copied: columns (NUMBER(≤18,0) → INTEGER, other NUMBER → NUMERIC, text and dates as text in ISO form), NOT NULL, primary and unique keys, normal indexes, rows (all, or the first N per table). **Tables the chosen ones point to** can be added automatically so joins work; the plan shows them and the estimated rows before anything is copied | tested |
+| **Masking:** columns you list (`SALARY`, `EMPLOYEES.SSN`, `PAY*`) are copied empty, and the values are blanked again on insert so a masked value can never be stored; LOB/binary columns are always empty | tested |
+| **Run SQL there**: SQLite with common Oracle functions registered (NVL, NVL2, DECODE, TO_CHAR, TO_DATE, TO_NUMBER, TRUNC, CEIL, FLOOR, POWER, SQRT, MOD, LPAD, RPAD, INITCAP, ADD_MONTHS, LAST_DAY) and exact rewrites (FROM DUAL, SYSDATE, MINUS, DATE '…', FETCH FIRST / OFFSET → LIMIT, FOR UPDATE); the rewritten SQL is shown. **Refused with a hint** instead of run differently: PL/SQL, MERGE, ROWNUM, CONNECT BY, `(+)`, sequences, LISTAGG | 17 core tests |
+| **Safe to break:** the first statement that changes anything keeps a copy of the clone; **Reset to clone** goes back. `ATTACH`, `PRAGMA`, `VACUUM` and the metadata table are blocked | tested |
+| Against a **real Oracle** | **not run**: ignored test `sandbox_clones_real_tables_into_sqlite_and_runs_oracle_style_sql` |
+
+**Limits:** SQLite is not Oracle: NUMBER above 18 digits or with decimals becomes SQLite's REAL/INTEGER and can lose precision, string comparison and sorting differ (no NLS), dates are text, and results of date arithmetic differ; "first N rows" is not a random sample and can break foreign-key completeness (relationships are recorded, not enforced); triggers, sequences, views, code and grants are not cloned; a clone of a large schema takes as long as reading it and the file is not encrypted, so mask personal data and delete the sandbox when done; row counts in the plan come from optimizer statistics; the demo's sandbox understands only simple SELECT, UPDATE and DELETE.
+
+## Status: PL/SQL scripts
+
+| Piece | State |
+|---|---|
+| Blocks and stored units (`BEGIN`/`DECLARE`/`CREATE PROCEDURE|FUNCTION|PACKAGE|TRIGGER|TYPE`) end at a line holding only `/`, as in SQL*Plus | tested |
+| **`EXEC proc(args)`** is a one-line SQL*Plus command: it ends at its line (so it no longer swallows what follows) and is sent as `BEGIN proc(args); END;`. `CALL` is plain SQL and loses its `;` | tested |
+| **`DBMS_OUTPUT`** is enabled when the connection opens and drained after every PL/SQL statement (at most 10,000 lines / 4 MB); shown in the **Output** panel under the editor | core tested on a fake database |
+| **Compile errors:** after `CREATE [OR REPLACE] PROCEDURE|FUNCTION|PACKAGE [BODY]|TRIGGER|TYPE [BODY]`, `ALL_ERRORS` is read (names are bound, never pasted into SQL); the line, column and message appear in Output, the statement counts as failed (a script stops there) and history records an error | tested; line 1 is the CREATE line |
+| The browser demo now uses the **same splitting rules**: `app/src/split.ts` is checked against `crates/ora-core/tests/fixtures/split_cases.json`, which the Rust tests also read (`npm run test:split`, also in CI) | 14 shared cases |
+| Everything above **against a real Oracle** | **not run**: ignored test `plsql_exec_output_and_compile_errors_work_on_a_real_database` |
+
+**Limits:** a block without a closing `/` still runs to the end of the text (as in SQL*Plus); `EXEC` must fit on one line; other SQL*Plus commands (`SET`, `PROMPT`, `@file`, `VARIABLE`) are not understood; `:bind` variables are not prompted for yet; `DBMS_OUTPUT` appears after the statement finishes, not while it runs; the demo's PL/SQL run is a stand-in (it replays `PUT_LINE` text and fakes a compile error for the name `undefined_var`).
+
+## Status: automatic AI help (no asking needed)
+
+| Piece | State |
+|---|---|
+| **Grey text at the cursor** (Tab accepts, Esc dismisses): after a 350 ms pause the model is asked to continue the SQL, at the end of a line only, never inside comments or strings, never after a finished statement. A newer keystroke cancels the older request, so stale text is never shown. Off while the normal completion list is open | 5 core tests (when to ask, output cleaning); behaviour verified in demo mode |
+| **After an error / after a result / after a pause**: a bar under the toolbar offers up to 3 suggestions (Fix, Faster, Next, Note) with the SQL to insert. Pausing is only reviewed when the text changed and is at least 20 characters | core parser tested (chatter, bad JSON, caps); UI verified in demo mode |
+| **Screen awareness**: the model is told the worksheet text around the cursor, the statement, the last error, the plan findings on screen, which schema you are in, and the *shape* of the last result (**column names and row count, never values**), plus the schema objects the context builder chose | tested: values and hidden columns never reach the prompt, fake closing tags are neutralised |
+| **Privacy and control**: **✨ Assist** switch in the toolbar (remembered), same **Never send** list as Chat, and every suggestion shows "sent N objects · ~T tokens". If the schema is not read yet, one button reads it. A sign-in problem pauses automatic calls; any other failure pauses them for 30 s | tested in demo mode |
+| Latency and quality against **your real endpoint** | **not run**: needs your endpoint and model. Completion requests are capped at 96 tokens, temperature 0 and a 2,000-token schema budget so a fast model feels instant |
+
+**Limits:** each automatic suggestion is a model call (completion after each typing pause, one per run, one per review pause), so use the switch on metered models; the "Read schema now" step reads the dictionary of the schema in the worksheet; grey text uses only the worksheet around the cursor, not the other tabs; suggested SQL is not validated against the schema yet (Chat does that).
+
+## Status: explain plan & Ask AI
+
+| Piece | State |
+|---|---|
+| **Explain plan** (worksheet **Explain**): `EXPLAIN PLAN` for the statement at the cursor or the selection, **never runs it**; plan rows are deleted afterwards. Tree with cost share per step, hot path, predicates, optimizer notes | 8 core tests on a fake database |
+| **Findings** with the step, why, and a suggestion: full scans (by size), cartesian joins, implicit conversions, functions on columns, nested loops over large outer sets, wide index scans, large sorts, filter subqueries, missing statistics, pinned or adaptive plans, and the step holding most of the cost. Index suggestions say to check the existing indexes first | tested |
+| **Context builder**: picks the part of the knowledge base a question needs (names, comments, columns, the SQL being edited, your history, foreign-key neighbours, packages that touch the tables) within a token budget, and shows it in **What is sent** before anything leaves | 10 core tests |
+| **Data policy**: metadata only (no row data); comments can be switched off; **Never send** hides tables or columns by `NAME`, `TABLE.COLUMN` or `PAY*` completely (name, comments, joins, indexes); database text cannot close the prompt's data tags | tested |
+| **Ask AI** panel: Write SQL, Ask, Explain, Fix error; streams the answer; each ```sql block is **checked against the schema** (unknown tables or columns, other schemas, data-changing statements) before **Insert into worksheet** | UI verified in demo mode |
+| Against a **real Oracle / real AI endpoint** | **not run**: ignored test `explain_plan_reads_the_plan_and_cleans_up`; needs your endpoint for Ask |
+
+**Limits:** Ask needs the knowledge base built first (Knowledge → Build); history only influences ranking in the core (the panel does not pass it yet); the validator is a check, not a parser of every Oracle feature, so a clean result is not a guarantee; `PLAN_TABLE` must exist (it does in 12c and later); the plan is the optimizer's estimate, not what ran.
 
 ## Status: PL/Scope (exact package usage)
 

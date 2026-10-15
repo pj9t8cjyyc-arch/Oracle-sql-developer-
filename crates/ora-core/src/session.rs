@@ -38,9 +38,7 @@ impl Default for RunOptions {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunResult {
     /// Nothing was executed; ask the user, then re-run with `confirmed`.
-    NeedsConfirmation {
-        analysis: Analysis,
-    },
+    NeedsConfirmation { analysis: Analysis },
     Rows {
         handle: u64,
         columns: Vec<Column>,
@@ -51,10 +49,78 @@ pub enum RunResult {
     Affected {
         count: u64,
         analysis: Analysis,
+        /// `DBMS_OUTPUT` lines written by a PL/SQL block.
+        output: Vec<String>,
     },
     Done {
         analysis: Analysis,
+        output: Vec<String>,
+        /// Set when a stored unit was created but does not compile.
+        compile: Option<CompileReport>,
     },
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CompileIssue {
+    pub line: u32,
+    pub column: u32,
+    /// `ERROR` or `WARNING`.
+    pub severity: String,
+    pub text: String,
+}
+
+/// What `ALL_ERRORS` says about a stored unit that was just created.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CompileReport {
+    /// `PROCEDURE HR.RAISE_PAY`
+    pub object: String,
+    pub issues: Vec<CompileIssue>,
+    pub has_errors: bool,
+}
+
+/// Reads the compile errors of the unit `sql` just created. A failure to read them is not an error of the statement.
+fn compile_report(db: &dyn Database, sql: &str) -> Option<CompileReport> {
+    let unit = guard::stored_unit(sql)?;
+    let (owner_sql, mut binds) = match &unit.owner {
+        Some(o) => (":1".to_string(), vec![o.clone()]),
+        None => (
+            "SYS_CONTEXT('USERENV','CURRENT_SCHEMA')".to_string(),
+            vec![],
+        ),
+    };
+    let q = |n: usize| format!(":{n}");
+    let base = binds.len();
+    binds.push(unit.name.clone());
+    binds.push(unit.kind.clone());
+    let query = format!(
+        "SELECT line, position, attribute, text FROM all_errors WHERE owner = {owner_sql} AND name = {} AND type = {} ORDER BY sequence",
+        q(base + 1),
+        q(base + 2)
+    );
+    let (_, rows) = crate::db::collect(db, &query, &binds).ok()?;
+    if rows.is_empty() {
+        return None;
+    }
+    let cell = |r: &Row, i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+    let issues: Vec<CompileIssue> = rows
+        .iter()
+        .map(|r| CompileIssue {
+            line: cell(r, 0).parse().unwrap_or(0),
+            column: cell(r, 1).parse().unwrap_or(0),
+            severity: cell(r, 2),
+            text: cell(r, 3).trim().to_string(),
+        })
+        .collect();
+    let has_errors = issues.iter().any(|i| i.severity == "ERROR");
+    let object = match &unit.owner {
+        Some(o) => format!("{} {o}.{}", unit.kind, unit.name),
+        None => format!("{} {}", unit.kind, unit.name),
+    };
+    Some(CompileReport {
+        object,
+        issues,
+        has_errors,
+    })
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -104,8 +170,23 @@ impl QueryManager {
             return Ok(RunResult::NeedsConfirmation { analysis });
         }
         match self.db.run(&analysis.sql, &[], opts.fetch_size)? {
-            Outcome::Affected(count) => Ok(RunResult::Affected { count, analysis }),
-            Outcome::Done => Ok(RunResult::Done { analysis }),
+            Outcome::Affected(count) => {
+                let output = self.output_of(&analysis);
+                Ok(RunResult::Affected {
+                    count,
+                    analysis,
+                    output,
+                })
+            }
+            Outcome::Done => {
+                let output = self.output_of(&analysis);
+                let compile = compile_report(self.db.as_ref(), &analysis.sql);
+                Ok(RunResult::Done {
+                    analysis,
+                    output,
+                    compile,
+                })
+            }
             Outcome::Rows(mut cursor) => {
                 let columns = cursor.columns().to_vec();
                 let first = opts.page_size.clamp(1, opts.max_rows.max(1));
@@ -138,6 +219,15 @@ impl QueryManager {
                     analysis,
                 })
             }
+        }
+    }
+
+    /// `DBMS_OUTPUT` of a PL/SQL statement. Reading it is best effort: it never fails the statement.
+    fn output_of(&self, analysis: &Analysis) -> Vec<String> {
+        if analysis.kind == guard::StatementKind::PlSql {
+            self.db.dbms_output().unwrap_or_default()
+        } else {
+            vec![]
         }
     }
 
@@ -346,5 +436,124 @@ mod tests {
         m.run("select * from big;  ", RunOptions::default())
             .unwrap();
         assert_eq!(log.lock().unwrap().calls[0].0, "select * from big");
+    }
+
+    fn plsql_db() -> (QueryManager, Arc<Mutex<crate::fake::FakeLog>>) {
+        let errors = FakeTable::new(
+            &["LINE", "POSITION", "ATTRIBUTE", "TEXT"],
+            vec![
+                vec![
+                    Some("3"),
+                    Some("5"),
+                    Some("ERROR"),
+                    Some("PLS-00201: identifier 'X' must be declared "),
+                ],
+                vec![
+                    Some("3"),
+                    Some("5"),
+                    Some("ERROR"),
+                    Some("PL/SQL: Statement ignored"),
+                ],
+            ],
+        );
+        let db = FakeDb::new()
+            .with_table("from all_errors", errors)
+            .with_done("begin")
+            .with_done("create or replace")
+            .with_output(&["Updated 1 row(s)", "done"]);
+        let log = db.log.clone();
+        (QueryManager::new(Arc::new(db), Environment::Dev), log)
+    }
+
+    #[test]
+    fn plsql_output_is_returned_with_the_result() {
+        let (m, _) = plsql_db();
+        let RunResult::Done {
+            output, compile, ..
+        } = m
+            .run("begin dbms_output.put_line('x'); end;", opts(10, 10))
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(output, vec!["Updated 1 row(s)", "done"]);
+        assert!(compile.is_none());
+    }
+
+    #[test]
+    fn exec_is_sent_as_a_block() {
+        let (m, log) = plsql_db();
+        m.run("exec raise_pay(1, 5);", opts(10, 10)).unwrap();
+        assert_eq!(
+            log.lock().unwrap().calls[0].0,
+            "BEGIN raise_pay(1, 5); END;"
+        );
+    }
+
+    #[test]
+    fn a_unit_that_does_not_compile_reports_its_errors_with_line_and_column() {
+        let (m, log) = plsql_db();
+        let RunResult::Done { compile, .. } = m
+            .run(
+                "create or replace procedure hr.p as begin x := 1; end;",
+                opts(10, 10),
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        let c = compile.expect("errors are reported");
+        assert!(c.has_errors);
+        assert_eq!(c.object, "PROCEDURE HR.P");
+        assert_eq!((c.issues[0].line, c.issues[0].column), (3, 5));
+        assert_eq!(
+            c.issues[0].text,
+            "PLS-00201: identifier 'X' must be declared"
+        );
+        let calls = log.lock().unwrap().calls.clone();
+        let (q, binds) = calls.last().unwrap();
+        assert!(
+            q.contains("all_errors") && !q.contains("hr.p"),
+            "names are bound, never pasted: {q}"
+        );
+        assert_eq!(
+            binds,
+            &vec!["HR".to_string(), "P".to_string(), "PROCEDURE".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_unit_without_an_owner_is_looked_up_in_the_current_schema() {
+        let (m, log) = plsql_db();
+        m.run(
+            "create or replace function f return number is begin return 1; end;",
+            opts(10, 10),
+        )
+        .unwrap();
+        let calls = log.lock().unwrap().calls.clone();
+        let (q, binds) = calls.last().unwrap();
+        assert!(q.contains("CURRENT_SCHEMA"), "{q}");
+        assert_eq!(binds, &vec!["F".to_string(), "FUNCTION".to_string()]);
+    }
+
+    #[test]
+    fn a_clean_compile_and_plain_ddl_report_nothing() {
+        let db = FakeDb::new().with_done("create").with_table(
+            "from all_errors",
+            FakeTable::new(&["LINE", "POSITION", "ATTRIBUTE", "TEXT"], vec![]),
+        );
+        let m = QueryManager::new(Arc::new(db), Environment::Dev);
+        for sql in [
+            "create or replace procedure p as begin null; end;",
+            "create table t (a number)",
+        ] {
+            let RunResult::Done {
+                compile, output, ..
+            } = m.run(sql, opts(10, 10)).unwrap()
+            else {
+                panic!()
+            };
+            assert!(compile.is_none() && output.is_empty(), "{sql}");
+        }
     }
 }

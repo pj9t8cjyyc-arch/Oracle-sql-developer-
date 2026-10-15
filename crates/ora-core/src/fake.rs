@@ -49,8 +49,12 @@ pub struct FakeDb {
     /// Checked first: statements containing the key fail with the given message.
     errors: Vec<(String, String)>,
     affected: Option<u64>,
+    /// Statements containing one of these finish without a result set (DDL, PL/SQL).
+    done: Vec<String>,
     /// `insert_batch` rejects a row whose first value is in this set (simulates a constraint violation).
     batch_failures: Vec<String>,
+    /// What `dbms_output` returns (once).
+    output: Mutex<Vec<String>>,
     pub log: Arc<Mutex<FakeLog>>,
 }
 
@@ -69,6 +73,14 @@ impl FakeDb {
     }
     pub fn with_batch_failures(mut self, first_values: &[&str]) -> Self {
         self.batch_failures = first_values.iter().map(|s| s.to_string()).collect();
+        self
+    }
+    pub fn with_done(mut self, sql_contains: &str) -> Self {
+        self.done.push(sql_contains.to_lowercase());
+        self
+    }
+    pub fn with_output(self, lines: &[&str]) -> Self {
+        *self.output.lock().unwrap() = lines.iter().map(|s| s.to_string()).collect();
         self
     }
     pub fn with_affected(mut self, n: u64) -> Self {
@@ -95,6 +107,9 @@ impl Cursor for FakeCursor {
 }
 
 impl Database for FakeDb {
+    fn dbms_output(&self) -> Result<Vec<String>> {
+        Ok(std::mem::take(&mut *self.output.lock().unwrap()))
+    }
     fn run(&self, sql: &str, binds: &[String], _fetch_size: usize) -> Result<Outcome> {
         self.log
             .lock()
@@ -111,6 +126,9 @@ impl Database for FakeDb {
                 rows: t.rows.clone().into_iter(),
                 log: self.log.clone(),
             })));
+        }
+        if self.done.iter().any(|k| lower.contains(k)) {
+            return Ok(Outcome::Done);
         }
         if let Some(n) = self.affected {
             return Ok(Outcome::Affected(n));

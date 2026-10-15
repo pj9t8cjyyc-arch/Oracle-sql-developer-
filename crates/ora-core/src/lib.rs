@@ -3,10 +3,12 @@
 //! without a database (see [`fake::FakeDb`]).
 
 pub mod ai;
+pub mod assist;
 pub mod catalog;
 pub mod comments;
 pub mod complete;
 pub mod conninfo;
+pub mod context;
 pub mod datadiff;
 pub mod db;
 pub mod dossier;
@@ -25,7 +27,9 @@ pub mod meta;
 pub mod oracle_backend;
 pub mod packages;
 pub mod parse;
+pub mod plan;
 pub mod profile;
+pub mod sandbox;
 pub mod schema;
 pub mod schemadiff;
 pub mod search;
@@ -33,5 +37,6 @@ pub mod session;
 pub mod sqltext;
 pub mod textdiff;
 pub mod tns;
+pub mod updates;
 
 pub use error::{Error, Result};

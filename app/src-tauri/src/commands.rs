@@ -101,7 +101,7 @@ pub(crate) struct Connected {
     index: Arc<Mutex<SearchIndex>>,
     /// Stable identity of user@host:port/service: the same across sessions, unlike the connection id.
     key: String,
-    name: String,
+    pub(crate) name: String,
     /// Opens another session to the same database for exports and imports, so a long job never
     /// blocks the worksheets and has its own transaction. The password is therefore kept in
     /// memory for as long as the connection is open (never written to disk).
@@ -278,6 +278,13 @@ pub async fn run_query(
     let (status, rows, error) = match &raw {
         Ok(RunResult::Rows { rows, .. }) => (Some(ExecStatus::Ok), Some(rows.len() as i64), None),
         Ok(RunResult::Affected { count, .. }) => (Some(ExecStatus::Ok), Some(*count as i64), None),
+        Ok(RunResult::Done {
+            compile: Some(c), ..
+        }) if c.has_errors => (
+            Some(ExecStatus::Error),
+            None,
+            Some(format!("{} created with compilation errors", c.object)),
+        ),
         Ok(RunResult::Done { .. }) => (Some(ExecStatus::Ok), None, None),
         Ok(RunResult::NeedsConfirmation { .. }) => (None, None, None),
         Err(ora_core::Error::Database(m)) => (
@@ -834,7 +841,7 @@ pub async fn kb_build(
     Ok(summary)
 }
 
-fn kb_for(
+pub(crate) fn kb_for(
     state: &State<'_, AppState>,
     conn: &str,
     owner: &str,
@@ -1066,4 +1073,18 @@ pub async fn client_status() -> CmdResult<ClientStatus> {
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+// ------------------------------------------------------------ explain plan
+
+/// Explains a statement without running it; the plan rows are removed from `PLAN_TABLE` afterwards.
+#[tauri::command]
+pub async fn explain_plan(
+    state: State<'_, AppState>,
+    conn: String,
+    sql: String,
+) -> CmdResult<ora_core::plan::Plan> {
+    let c = current(&state, &conn)?;
+    let db = c.db.clone();
+    blocking(move || ora_core::plan::explain(db.as_ref(), &sql)).await
 }
