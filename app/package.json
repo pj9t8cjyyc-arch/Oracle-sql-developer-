@@ -7,14 +7,18 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:split": "node --experimental-strip-types scripts/split-check.ts",
+    "check:release": "node scripts/check-release-config.mjs"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.8.0",
     "@codemirror/lang-sql": "^6.8.0",
     "@codemirror/state": "^6.5.0",
     "@codemirror/view": "^6.36.0",
     "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.8.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

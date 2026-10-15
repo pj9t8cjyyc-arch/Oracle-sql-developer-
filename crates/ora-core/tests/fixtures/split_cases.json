@@ -1,0 +1,242 @@
+[
+  {
+    "statements": [
+      {
+        "kind": "select",
+        "sent": "select 1 from dual",
+        "text": "select 1 from dual"
+      },
+      {
+        "kind": "select",
+        "sent": "-- c\nselect 2 from dual",
+        "text": "-- c\nselect 2 from dual"
+      }
+    ],
+    "text": "select 1 from dual; -- c\nselect 2 from dual;\n"
+  },
+  {
+    "statements": [
+      {
+        "kind": "ddl",
+        "sent": "-- Sample\nCREATE TABLE d (id NUMBER)",
+        "text": "-- Sample\nCREATE TABLE d (id NUMBER)"
+      },
+      {
+        "kind": "insert",
+        "sent": "INSERT INTO d VALUES (1)",
+        "text": "INSERT INTO d VALUES (1)"
+      },
+      {
+        "kind": "plsql",
+        "sent": "CREATE OR REPLACE PROCEDURE p(a NUMBER) AS\nBEGIN\n  UPDATE d SET id = id * (1 + a / 100);\n  DBMS_OUTPUT.PUT_LINE('x');\nEND;",
+        "text": "CREATE OR REPLACE PROCEDURE p(a NUMBER) AS\nBEGIN\n  UPDATE d SET id = id * (1 + a / 100);\n  DBMS_OUTPUT.PUT_LINE('x');\nEND;"
+      },
+      {
+        "kind": "plsql",
+        "sent": "BEGIN\n  p(1);\n  COMMIT;\nEND;",
+        "text": "BEGIN\n  p(1);\n  COMMIT;\nEND;"
+      },
+      {
+        "kind": "plsql",
+        "sent": "BEGIN p(1, 5); END;",
+        "text": "EXEC p(1, 5);"
+      },
+      {
+        "kind": "select",
+        "sent": "SELECT id FROM d",
+        "text": "SELECT id FROM d"
+      }
+    ],
+    "text": "-- Sample\nCREATE TABLE d (id NUMBER);\nINSERT INTO d VALUES (1);\nCREATE OR REPLACE PROCEDURE p(a NUMBER) AS\nBEGIN\n  UPDATE d SET id = id * (1 + a / 100);\n  DBMS_OUTPUT.PUT_LINE('x');\nEND;\n/\n\nBEGIN\n  p(1);\n  COMMIT;\nEND;\n/\n\nEXEC p(1, 5);\n\nSELECT id FROM d;\n"
+  },
+  {
+    "statements": [
+      {
+        "kind": "plsql",
+        "sent": "begin\n  x := 10 / 2;\nend;",
+        "text": "begin\n  x := 10 / 2;\nend;"
+      }
+    ],
+    "text": "begin\n  x := 10 / 2;\nend;\n/"
+  },
+  {
+    "statements": [
+      {
+        "kind": "plsql",
+        "sent": "BEGIN raise_pay(1, 5); END;",
+        "text": "exec raise_pay(1, 5);"
+      },
+      {
+        "kind": "select",
+        "sent": "select 1 from dual",
+        "text": "select 1 from dual"
+      },
+      {
+        "kind": "plsql",
+        "sent": "BEGIN p; END;",
+        "text": "exec p"
+      }
+    ],
+    "text": "exec raise_pay(1, 5);\nselect 1 from dual;\nexec p\n"
+  },
+  {
+    "statements": [
+      {
+        "kind": "plsql",
+        "sent": "begin null; end;",
+        "text": "begin null; end;"
+      },
+      {
+        "kind": "plsql",
+        "sent": "BEGIN a; END;",
+        "text": "exec a;"
+      },
+      {
+        "kind": "plsql",
+        "sent": "call b(1)",
+        "text": "call b(1)"
+      },
+      {
+        "kind": "select",
+        "sent": "select 2 from dual",
+        "text": "select 2 from dual"
+      }
+    ],
+    "text": "begin null; end;\n/\nexec a;\ncall b(1);\nselect 2 from dual;"
+  },
+  {
+    "statements": [
+      {
+        "kind": "select",
+        "sent": "select 'a;b', \"C;D\" from t",
+        "text": "select 'a;b', \"C;D\" from t"
+      },
+      {
+        "kind": "select",
+        "sent": "select q'[x;y]' from dual",
+        "text": "select q'[x;y]' from dual"
+      }
+    ],
+    "text": "select 'a;b', \"C;D\" from t; select q'[x;y]' from dual;"
+  },
+  {
+    "statements": [
+      {
+        "kind": "select",
+        "sent": "select (1;2) from dual",
+        "text": "select (1;2) from dual"
+      },
+      {
+        "kind": "select",
+        "sent": "select 3 from dual",
+        "text": "select 3 from dual"
+      }
+    ],
+    "text": "select (1;2) from dual; select 3 from dual"
+  },
+  {
+    "statements": [
+      {
+        "kind": "plsql",
+        "sent": "create or replace package body pk as\n  procedure a is begin null; end;\nend pk;",
+        "text": "create or replace package body pk as\n  procedure a is begin null; end;\nend pk;"
+      },
+      {
+        "kind": "select",
+        "sent": "select 1 from dual",
+        "text": "select 1 from dual"
+      }
+    ],
+    "text": "create or replace package body pk as\n  procedure a is begin null; end;\nend pk;\n/\nselect 1 from dual;"
+  },
+  {
+    "statements": [
+      {
+        "kind": "select",
+        "sent": "select 1 from dual /* tail ; */",
+        "text": "select 1 from dual /* tail ; */"
+      }
+    ],
+    "text": "/* only a comment */\n-- another\n;\nselect 1 from dual /* tail ; */;"
+  },
+  {
+    "statements": [
+      {
+        "kind": "plsql",
+        "sent": "declare\n  v number;\nbegin\n  v := 1;\nend;",
+        "text": "declare\n  v number;\nbegin\n  v := 1;\nend;"
+      },
+      {
+        "kind": "transaction",
+        "sent": "commit",
+        "text": "commit"
+      }
+    ],
+    "text": "declare\n  v number;\nbegin\n  v := 1;\nend;\n/\ncommit;"
+  },
+  {
+    "statements": [
+      {
+        "kind": "update",
+        "sent": "UPDATE t SET a = 1 WHERE b = 2",
+        "text": "UPDATE t SET a = 1 WHERE b = 2"
+      },
+      {
+        "kind": "ddl",
+        "sent": "DROP TABLE t",
+        "text": "DROP TABLE t"
+      },
+      {
+        "kind": "ddl",
+        "sent": "GRANT SELECT ON t TO u",
+        "text": "GRANT SELECT ON t TO u"
+      },
+      {
+        "kind": "transaction",
+        "sent": "rollback",
+        "text": "rollback"
+      }
+    ],
+    "text": "UPDATE t SET a = 1 WHERE b = 2;\nDROP TABLE t;\nGRANT SELECT ON t TO u;\nrollback"
+  },
+  {
+    "statements": [
+      {
+        "kind": "plsql",
+        "sent": "begin\n  null;\nend;",
+        "text": "begin\n  null;\nend;"
+      },
+      {
+        "kind": "select",
+        "sent": "select 9 from dual",
+        "text": "select 9 from dual"
+      }
+    ],
+    "text": "begin\n  null;\nend;\n  /  \nselect 9 from dual"
+  },
+  {
+    "statements": [
+      {
+        "kind": "plsql",
+        "sent": "call p(1)",
+        "text": "call p(1)"
+      },
+      {
+        "kind": "plsql",
+        "sent": "call q(2)",
+        "text": "call q(2)"
+      }
+    ],
+    "text": "call p(1);\ncall q(2)\n"
+  },
+  {
+    "statements": [
+      {
+        "kind": "plsql",
+        "sent": "create trigger tr before insert on t for each row\nbegin\n  :new.a := 1;\nend;",
+        "text": "create trigger tr before insert on t for each row\nbegin\n  :new.a := 1;\nend;"
+      }
+    ],
+    "text": "create trigger tr before insert on t for each row\nbegin\n  :new.a := 1;\nend;\n/\n"
+  }
+]

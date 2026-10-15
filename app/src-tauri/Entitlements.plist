@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- The Oracle Instant Client is loaded at run time and is signed by Oracle, not by us. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <!-- Lets DYLD_LIBRARY_PATH point at the Instant Client folder. -->
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+</dict>
+</plist>

@@ -32,12 +32,31 @@ pub enum Outcome {
     Done,
 }
 
+/// Result of a bulk insert: rows that failed are reported by their index within the batch
+/// and the others are inserted (not yet committed).
+#[derive(Debug, Default, Clone)]
+pub struct BatchOutcome {
+    pub inserted: u64,
+    pub errors: Vec<(usize, String)>,
+}
+
 pub trait Database: Send + Sync {
     /// Execute one statement (no trailing `;`). `fetch_size` is the driver
     /// array/prefetch size, the main lever for large-result throughput.
     fn run(&self, sql: &str, binds: &[String], fetch_size: usize) -> Result<Outcome>;
     fn commit(&self) -> Result<()>;
     fn rollback(&self) -> Result<()>;
+    /// Insert many rows with one array-bound statement. Every row has one value per
+    /// placeholder of `sql`; `None` binds NULL. Backends without bulk support return an error.
+    fn insert_batch(&self, _sql: &str, _rows: &[Vec<Option<String>>]) -> Result<BatchOutcome> {
+        Err(crate::Error::Invalid(
+            "this backend does not support bulk insert".into(),
+        ))
+    }
+    /// Lines the last statements wrote with `DBMS_OUTPUT.PUT_LINE`, removed from the session buffer.
+    fn dbms_output(&self) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
     /// Interrupt the statement currently executing on this connection.
     fn cancel(&self) -> Result<()> {
         Ok(())

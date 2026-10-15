@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::db::{Column, Cursor, Database, Outcome, Row};
+use crate::db::{BatchOutcome, Column, Cursor, Database, Outcome, Row};
 use crate::{Error, Result};
 
 #[derive(Clone)]
@@ -38,13 +38,23 @@ pub struct FakeLog {
     pub rows_served: usize,
     pub commits: usize,
     pub rollbacks: usize,
+    /// (sql, rows) of every `insert_batch` call.
+    pub batches: Vec<(String, Vec<Row>)>,
 }
 
 #[derive(Default)]
 pub struct FakeDb {
     /// First responder whose key is a substring of the (lower-cased) SQL wins.
     responders: Vec<(String, FakeTable)>,
+    /// Checked first: statements containing the key fail with the given message.
+    errors: Vec<(String, String)>,
     affected: Option<u64>,
+    /// Statements containing one of these finish without a result set (DDL, PL/SQL).
+    done: Vec<String>,
+    /// `insert_batch` rejects a row whose first value is in this set (simulates a constraint violation).
+    batch_failures: Vec<String>,
+    /// What `dbms_output` returns (once).
+    output: Mutex<Vec<String>>,
     pub log: Arc<Mutex<FakeLog>>,
 }
 
@@ -54,6 +64,23 @@ impl FakeDb {
     }
     pub fn with_table(mut self, sql_contains: &str, t: FakeTable) -> Self {
         self.responders.push((sql_contains.to_lowercase(), t));
+        self
+    }
+    pub fn with_error(mut self, sql_contains: &str, message: &str) -> Self {
+        self.errors
+            .push((sql_contains.to_lowercase(), message.to_string()));
+        self
+    }
+    pub fn with_batch_failures(mut self, first_values: &[&str]) -> Self {
+        self.batch_failures = first_values.iter().map(|s| s.to_string()).collect();
+        self
+    }
+    pub fn with_done(mut self, sql_contains: &str) -> Self {
+        self.done.push(sql_contains.to_lowercase());
+        self
+    }
+    pub fn with_output(self, lines: &[&str]) -> Self {
+        *self.output.lock().unwrap() = lines.iter().map(|s| s.to_string()).collect();
         self
     }
     pub fn with_affected(mut self, n: u64) -> Self {
@@ -80,6 +107,9 @@ impl Cursor for FakeCursor {
 }
 
 impl Database for FakeDb {
+    fn dbms_output(&self) -> Result<Vec<String>> {
+        Ok(std::mem::take(&mut *self.output.lock().unwrap()))
+    }
     fn run(&self, sql: &str, binds: &[String], _fetch_size: usize) -> Result<Outcome> {
         self.log
             .lock()
@@ -87,6 +117,9 @@ impl Database for FakeDb {
             .calls
             .push((sql.to_string(), binds.to_vec()));
         let lower = sql.to_lowercase();
+        if let Some((_, m)) = self.errors.iter().find(|(k, _)| lower.contains(k)) {
+            return Err(Error::Database(m.clone()));
+        }
         if let Some((_, t)) = self.responders.iter().find(|(k, _)| lower.contains(k)) {
             return Ok(Outcome::Rows(Box::new(FakeCursor {
                 columns: t.columns.clone(),
@@ -94,12 +127,42 @@ impl Database for FakeDb {
                 log: self.log.clone(),
             })));
         }
+        if self.done.iter().any(|k| lower.contains(k)) {
+            return Ok(Outcome::Done);
+        }
         if let Some(n) = self.affected {
             return Ok(Outcome::Affected(n));
         }
         Err(Error::Database(
             "ORA-00942: table or view does not exist".into(),
         ))
+    }
+    fn insert_batch(&self, sql: &str, rows: &[Row]) -> Result<BatchOutcome> {
+        self.log
+            .lock()
+            .unwrap()
+            .batches
+            .push((sql.to_string(), rows.to_vec()));
+        let errors: Vec<(usize, String)> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                r.first()
+                    .cloned()
+                    .flatten()
+                    .is_some_and(|v| self.batch_failures.contains(&v))
+            })
+            .map(|(i, _)| {
+                (
+                    i,
+                    "ORA-00001: unique constraint (APP.PK) violated".to_string(),
+                )
+            })
+            .collect();
+        Ok(BatchOutcome {
+            inserted: (rows.len() - errors.len()) as u64,
+            errors,
+        })
     }
     fn commit(&self) -> Result<()> {
         self.log.lock().unwrap().commits += 1;

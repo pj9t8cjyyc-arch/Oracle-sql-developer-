@@ -4,6 +4,7 @@
 
 use serde::Serialize;
 
+use crate::lexer::{lex, Tok};
 use crate::profile::Environment;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -48,90 +49,8 @@ pub struct Analysis {
     pub read_only: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Tok {
-    Word(String), // upper-cased
-    Punct(char),
-    Other, // literals, quoted identifiers, numbers
-}
-
 fn tokenize(src: &str) -> Vec<Tok> {
-    let c: Vec<char> = src.chars().collect();
-    let n = c.len();
-    let mut i = 0;
-    let mut out = Vec::new();
-    while i < n {
-        let ch = c[i];
-        if ch.is_whitespace() {
-            i += 1;
-        } else if ch == '-' && i + 1 < n && c[i + 1] == '-' {
-            while i < n && c[i] != '\n' {
-                i += 1;
-            }
-        } else if ch == '/' && i + 1 < n && c[i + 1] == '*' {
-            i += 2;
-            while i + 1 < n && !(c[i] == '*' && c[i + 1] == '/') {
-                i += 1;
-            }
-            i = (i + 2).min(n);
-        } else if (ch == 'q' || ch == 'Q')
-            && i + 2 < n
-            && c[i + 1] == '\''
-            && !c[i + 2].is_whitespace()
-        {
-            // q'[ ... ]' alternative quoting
-            let open = c[i + 2];
-            let close = match open {
-                '[' => ']',
-                '{' => '}',
-                '(' => ')',
-                '<' => '>',
-                o => o,
-            };
-            i += 3;
-            while i + 1 < n && !(c[i] == close && c[i + 1] == '\'') {
-                i += 1;
-            }
-            i = (i + 2).min(n);
-            out.push(Tok::Other);
-        } else if ch == '\'' {
-            i += 1;
-            while i < n {
-                if c[i] == '\'' {
-                    if i + 1 < n && c[i + 1] == '\'' {
-                        i += 2;
-                        continue;
-                    }
-                    break;
-                }
-                i += 1;
-            }
-            i = (i + 1).min(n);
-            out.push(Tok::Other);
-        } else if ch == '"' {
-            i += 1;
-            while i < n && c[i] != '"' {
-                i += 1;
-            }
-            i = (i + 1).min(n);
-            out.push(Tok::Other);
-        } else if ch.is_alphabetic() || ch == '_' {
-            let s = i;
-            while i < n && (c[i].is_alphanumeric() || matches!(c[i], '_' | '$' | '#')) {
-                i += 1;
-            }
-            out.push(Tok::Word(c[s..i].iter().collect::<String>().to_uppercase()));
-        } else if ch.is_ascii_digit() {
-            while i < n && (c[i].is_ascii_alphanumeric() || c[i] == '.') {
-                i += 1;
-            }
-            out.push(Tok::Other);
-        } else {
-            out.push(Tok::Punct(ch));
-            i += 1;
-        }
-    }
-    out
+    lex(src).into_iter().map(|t| t.tok).collect()
 }
 
 fn is_word(t: &Tok, w: &str) -> bool {
@@ -148,7 +67,7 @@ fn first_word(toks: &[Tok]) -> Option<&str> {
     })
 }
 
-fn is_plsql(toks: &[Tok]) -> bool {
+pub(crate) fn is_plsql(toks: &[Tok]) -> bool {
     match first_word(toks) {
         Some("BEGIN") | Some("DECLARE") | Some("CALL") | Some("EXEC") | Some("EXECUTE") => true,
         Some("CREATE") => {
@@ -168,6 +87,90 @@ fn is_plsql(toks: &[Tok]) -> bool {
                 })
         }
         _ => false,
+    }
+}
+
+/// SQL*Plus shorthand `EXEC proc(args)`: not SQL, so it is sent as `BEGIN proc(args); END;`.
+pub(crate) fn is_exec(toks: &[Tok]) -> bool {
+    matches!(first_word(toks), Some("EXEC") | Some("EXECUTE"))
+}
+
+/// Statements that contain `;` themselves and therefore end at a line with only `/`.
+pub(crate) fn is_block(toks: &[Tok]) -> bool {
+    is_plsql(toks) && !is_exec(toks) && first_word(toks) != Some("CALL")
+}
+
+/// `EXEC proc(1)` -> `BEGIN proc(1); END;`
+fn exec_to_block(sql: &str) -> String {
+    let chars: Vec<char> = sql.chars().collect();
+    let after = crate::lexer::lex(sql)
+        .iter()
+        .find(|t| matches!(&t.tok, Tok::Word(w) if w == "EXEC" || w == "EXECUTE"))
+        .map_or(0, |t| t.end);
+    let body: String = chars[after.min(chars.len())..].iter().collect();
+    let body = body.trim().trim_end_matches(';').trim_end();
+    format!("BEGIN {body}; END;")
+}
+
+/// A stored unit being created: its `ALL_ERRORS` type, optional owner and name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredUnit {
+    pub kind: String,
+    pub owner: Option<String>,
+    pub name: String,
+}
+
+/// `CREATE [OR REPLACE] [EDITIONABLE] PACKAGE BODY [owner.]name ...` -> what to look up in `ALL_ERRORS`.
+pub fn stored_unit(sql: &str) -> Option<StoredUnit> {
+    let toks: Vec<Tok> = crate::lexer::lex(sql).into_iter().map(|t| t.tok).collect();
+    let mut i = 0;
+    let word = |i: usize| match toks.get(i) {
+        Some(Tok::Word(w)) => Some(w.as_str()),
+        _ => None,
+    };
+    if word(i)? != "CREATE" {
+        return None;
+    }
+    i += 1;
+    while matches!(
+        word(i),
+        Some("OR" | "REPLACE" | "EDITIONABLE" | "NONEDITIONABLE")
+    ) {
+        i += 1;
+    }
+    let base = word(i)?;
+    if !matches!(
+        base,
+        "FUNCTION" | "PROCEDURE" | "PACKAGE" | "TRIGGER" | "TYPE"
+    ) {
+        return None;
+    }
+    i += 1;
+    let kind = if matches!(base, "PACKAGE" | "TYPE") && word(i) == Some("BODY") {
+        i += 1;
+        format!("{base} BODY")
+    } else {
+        base.to_string()
+    };
+    let ident = |t: Option<&Tok>| match t {
+        Some(Tok::Word(w)) => Some(w.clone()),
+        Some(Tok::Quoted(q)) => Some(q.clone()),
+        _ => None,
+    };
+    let first = ident(toks.get(i))?;
+    if toks.get(i + 1) == Some(&Tok::Punct('.')) {
+        let name = ident(toks.get(i + 2))?;
+        Some(StoredUnit {
+            kind,
+            owner: Some(first),
+            name,
+        })
+    } else {
+        Some(StoredUnit {
+            kind,
+            owner: None,
+            name: first,
+        })
     }
 }
 
@@ -225,6 +228,8 @@ pub fn analyze(sql: &str, env: Environment) -> Analysis {
     };
 
     let plsql = is_plsql(&toks);
+    let block = is_block(&toks);
+    let exec = is_exec(&toks);
     let kind = match first_word(&toks) {
         None => StatementKind::Empty,
         _ if plsql => StatementKind::PlSql,
@@ -315,8 +320,10 @@ pub fn analyze(sql: &str, env: Environment) -> Analysis {
 
     Analysis {
         kind,
-        sql: if plsql {
+        sql: if block {
             sql.trim().to_string()
+        } else if exec {
+            exec_to_block(sql)
         } else {
             strip_trailing_semicolon(sql)
         },
@@ -414,6 +421,47 @@ mod tests {
         assert!(p.sql.ends_with("end;"), "PL/SQL keeps its terminator");
         let f = a("create or replace procedure p as begin null; end;");
         assert_eq!(f.kind, StatementKind::PlSql);
+    }
+
+    #[test]
+    fn exec_becomes_an_anonymous_block_and_call_loses_its_semicolon() {
+        let e = a("EXEC raise_pay(1, 5);");
+        assert_eq!(e.kind, StatementKind::PlSql);
+        assert_eq!(e.sql, "BEGIN raise_pay(1, 5); END;");
+        assert_eq!(a("execute pkg.run").sql, "BEGIN pkg.run; END;");
+        assert_eq!(a("-- note\nexec p(1);").sql, "BEGIN p(1); END;");
+        let c = a("call p(1);");
+        assert_eq!(c.kind, StatementKind::PlSql);
+        assert_eq!(c.sql, "call p(1)");
+    }
+
+    #[test]
+    fn stored_units_are_recognised_for_compile_error_lookup() {
+        let u =
+            stored_unit("create or replace procedure hr.raise_pay(p number) as begin null; end;")
+                .unwrap();
+        assert_eq!(
+            (u.kind.as_str(), u.owner.as_deref(), u.name.as_str()),
+            ("PROCEDURE", Some("HR"), "RAISE_PAY")
+        );
+        let u =
+            stored_unit("CREATE OR REPLACE EDITIONABLE PACKAGE BODY \"Mixed\" IS END;").unwrap();
+        assert_eq!(
+            (u.kind.as_str(), u.owner, u.name.as_str()),
+            ("PACKAGE BODY", None, "Mixed")
+        );
+        assert_eq!(
+            stored_unit("create trigger t before insert on x begin null; end;")
+                .unwrap()
+                .kind,
+            "TRIGGER"
+        );
+        assert_eq!(
+            stored_unit("create type body ty as end;").unwrap().kind,
+            "TYPE BODY"
+        );
+        assert!(stored_unit("create table t (a number)").is_none());
+        assert!(stored_unit("begin null; end;").is_none());
     }
 
     #[test]

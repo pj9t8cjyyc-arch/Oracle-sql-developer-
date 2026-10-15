@@ -1,12 +1,87 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ai;
 mod commands;
+mod compare;
+mod jobs;
+mod sandbox;
+mod updates;
 
 fn main() {
     tauri::Builder::default()
-        .manage(commands::AppState::default())
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            use tauri::Manager;
+            let dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&dir)?;
+            // History and worksheets live in one local SQLite file. If it cannot be
+            // opened (read-only disk, newer schema), fall back to memory and say so
+            // in the UI instead of failing to start.
+            let (store, persistent) =
+                match ora_core::history::HistoryStore::open(&dir.join("workspace.sqlite")) {
+                    Ok(s) => (s, true),
+                    Err(e) => {
+                        eprintln!("history: {e}; using an in-memory store");
+                        (ora_core::history::HistoryStore::in_memory()?, false)
+                    }
+                };
+            app.manage(commands::AppState::new(store, persistent));
+            // The updater needs the public key and feed from tauri.updater.conf.json; a build without them still runs.
+            #[cfg(feature = "updater")]
+            if let Err(e) = app
+                .handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())
+            {
+                eprintln!("updates: not available ({e})");
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::list_profiles,
+            commands::test_connection,
+            commands::tns_aliases,
+            commands::client_status,
+            commands::package_analysis,
+            commands::graph_info,
+            commands::graph_search,
+            commands::graph_focus,
+            commands::kb_build,
+            commands::kb_status,
+            commands::kb_preview,
+            commands::kb_export,
+            ai::ai_status,
+            ai::ai_get_config,
+            ai::ai_save_config,
+            ai::ai_set_token,
+            ai::ai_clear_token,
+            ai::ai_test,
+            ai::ai_chat_start,
+            ai::ai_cancel,
+            ai::ask_context,
+            ai::ask_start,
+            ai::ask_validate,
+            ai::ask_extract_sql,
+            ai::assist_complete,
+            ai::assist_suggest,
+            commands::explain_plan,
+            sandbox::sandbox_tables,
+            sandbox::sandbox_plan,
+            sandbox::sandbox_clone_start,
+            sandbox::sandbox_list,
+            sandbox::sandbox_delete,
+            sandbox::sandbox_reset,
+            sandbox::sandbox_run,
+            updates::update_status,
+            updates::update_set,
+            updates::update_check,
+            updates::update_install,
+            compare::text_diff,
+            compare::text_patch,
+            compare::text_read_file,
+            compare::text_write_file,
+            compare::data_side_preview,
+            compare::data_diff_start,
+            compare::schema_compare,
             commands::save_profile,
             commands::delete_profile,
             commands::connect,
@@ -18,8 +93,44 @@ fn main() {
             commands::commit,
             commands::rollback,
             commands::list_schemas,
+            commands::object_counts,
             commands::list_objects,
-            commands::list_columns,
+            commands::object_source,
+            commands::object_ddl,
+            commands::sequence_info,
+            commands::object_dependencies,
+            commands::statements,
+            jobs::job_cancel,
+            jobs::export_recommend,
+            jobs::export_start,
+            jobs::import_profile,
+            jobs::import_plan,
+            jobs::import_ddl,
+            jobs::import_create_table,
+            jobs::import_validate_start,
+            jobs::import_start,
+            commands::history_status,
+            commands::history_set_enabled,
+            commands::history_search,
+            commands::history_suggest,
+            commands::history_pin,
+            commands::history_forget,
+            commands::history_purge,
+            commands::ws_save,
+            commands::ws_close,
+            commands::ws_pin,
+            commands::ws_delete,
+            commands::ws_list,
+            commands::ws_get,
+            commands::ws_steps,
+            commands::preview_table,
+            commands::refresh_metadata,
+            commands::table_insight,
+            commands::complete,
+            commands::references,
+            commands::search_objects,
+            commands::preview_comment,
+            commands::save_comment,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");
