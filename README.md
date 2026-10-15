@@ -2,19 +2,18 @@
 
 A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React + CodeMirror UI.
 
-## Status: Phase 1 (understand the schema while you work)
+## Status: workspace redesign (multi-connection dictionary browser)
 
 | Piece | State |
 |---|---|
-| `ora-core` safe-mode guard, query sessions, schema browser (Phase 0) | unit-tested |
-| `ora-core` lexer + table-reference parser (`parse.rs`) | unit-tested |
-| `ora-core` column insight: keys, FKs, checks, indexes (position/leading/unusable), triggers (UPDATE OF / referenced / any update), stats, comments, dependencies | unit-tested on a fake; **dictionary SQL not yet run on a real Oracle** |
-| `ora-core` catalog cache + context-aware autocomplete incl. FK-based `JOIN … ON` suggestions | unit-tested (pure function) |
-| `ora-core` ranked search (SQLite FTS5): objects, columns, comments, PL/SQL source | unit-tested against real SQLite |
-| `ora-core` comment saving (`COMMENT ON …`) with strict quoting | unit-tested incl. hostile input |
-| `ora-core` Oracle backend (`--features oracle`) | compiles; **not yet run against a database** |
-| `app/` UI: autocomplete, header badges, insight panel, Ctrl+K search, comment editor | builds; behaviour verified in browser **demo mode** |
-| `app/src-tauri` desktop shell | compiles; not yet launched on a desktop |
+| Multiple simultaneous connections (Tauri state keyed by connection id; every command takes `conn`) | compiles; **not run against real databases** |
+| Explorer: connections → schemas → kinds (tables, views, mviews, indexes, sequences, triggers, procedures, functions, packages, types, synonyms) with counts; invalid/unusable/disabled flagged | UI verified in demo mode |
+| Object pages: table overview (indexes, triggers, sequences, constraints, referenced-by at a glance), column focus pane, per-kind pages with source/DDL/dependencies | UI verified in demo mode |
+| Sequences: identity columns, trigger-assigned (`:NEW.col := seq.NEXTVAL`, parsed from trigger source), table dependencies | 79 unit tests; **dictionary SQL not run on a real Oracle** |
+| Cross-connection search (Ctrl/Cmd+K) | UI verified in demo mode |
+| Phase 0/1 (guard, streaming, insight, autocomplete, FTS5 search, comments) | as before |
+
+**Sequence attribution** — Oracle has no table→sequence link, so each use is tagged with how it was found: `identity` (exact), `trigger` (exact column, from parsing the trigger body; dynamic SQL or indirection through a variable is not detected) or `default` (the table depends on the sequence, e.g. a column DEFAULT; the column is *not* guessed).
 
 ### Try it
 
@@ -30,7 +29,7 @@ cd app && npm run tauri dev                 # real app; needs Oracle Instant Cli
 ORA_HOST=localhost ORA_SERVICE=FREEPDB1 ORA_USER=system ORA_PASSWORD=... \
 cargo test -p ora-core --features oracle --test oracle_it -- --ignored --nocapture
 ```
-Prints first-page latency and rows/second for a 100k-row stream, and checks the Phase 1 dictionary queries (keys, indexes, triggers, comments, catalog load, completion, search).
+Prints first-page latency and rows/second for a 100k-row stream, and checks the dictionary queries (keys, indexes, triggers, sequences, comments, catalog load, completion, search, object listing, source, DDL, dependencies). Sequence tests need Oracle 12c+ (identity / DEFAULT seq.NEXTVAL).
 
 ## Design notes
 - **Lazy paging**: the server-side cursor stays open; the UI asks for 500 rows at a time (virtualised grid) up to a 100k-row cap.
@@ -42,6 +41,8 @@ Prints first-page latency and rows/second for a 100k-row stream, and checks the 
 - **Result-header badges** only appear for column names that exist in exactly one table referenced by the query; ambiguous names get none rather than wrong ones. Aliased/computed columns get none.
 - **Autocomplete** runs on an in-memory catalog snapshot (refreshed per schema; **Reindex** also indexes PL/SQL source, capped at 300k lines). Known limit: a table that follows a parenthesised subquery in the same comma-separated `FROM` list is not seen.
 - **Comments** are DDL (immediate, not rollback-able): the exact statement is always shown for confirmation.
+- Worksheets on the same connection share one session (and transaction); Commit/Rollback apply to the connection, not the tab.
+- Explorer lists are capped at 300 rows per kind (use the filter); there is no virtualised tree yet.
 - The search index is one SQLite file per `user@host:port/service` in the app data directory.
 
 ## Roadmap

@@ -201,6 +201,85 @@ pub fn statement_range(toks: &[Token], cursor: usize, text_len: usize) -> (usize
     (start, text_len)
 }
 
+/// `:NEW.col` populated from a sequence, found in trigger source.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SeqAssign {
+    pub column: String,
+    pub seq_schema: Option<String>,
+    pub seq: String,
+}
+
+/// Finds the two classic ways a trigger fills a column from a sequence:
+/// `:NEW.col := [schema.]seq.NEXTVAL` and
+/// `SELECT [schema.]seq.NEXTVAL INTO :NEW.col FROM dual`.
+/// Anything cleverer (dynamic SQL, indirection through a variable) is not
+/// detected, so callers must treat the result as "known assignments", not "all".
+pub fn sequence_assignments(src: &str) -> Vec<SeqAssign> {
+    let toks = lex(src);
+    let at = |i: usize| toks.get(i).map(|t| &t.tok);
+    let name = |i: usize| match at(i) {
+        Some(Tok::Word(w)) => Some(w.clone()),
+        Some(Tok::Quoted(q)) => Some(q.clone()),
+        _ => None,
+    };
+    let dot = |i: usize| matches!(at(i), Some(Tok::Punct('.')));
+    let word = |i: usize, w: &str| matches!(at(i), Some(Tok::Word(x)) if x == w);
+    // `[schema.]seq.NEXTVAL` starting at i -> (schema, seq, next index)
+    let nextval = |i: usize| -> Option<(Option<String>, String, usize)> {
+        if let (Some(a), true, Some(b), true, true) = (
+            name(i),
+            dot(i + 1),
+            name(i + 2),
+            dot(i + 3),
+            word(i + 4, "NEXTVAL"),
+        ) {
+            return Some((Some(a), b, i + 5));
+        }
+        if let (Some(a), true, true) = (name(i), dot(i + 1), word(i + 2, "NEXTVAL")) {
+            return Some((None, a, i + 3));
+        }
+        None
+    };
+    // `:NEW.col` starting at i -> (col, next index)
+    let new_col = |i: usize| -> Option<(String, usize)> {
+        if matches!(at(i), Some(Tok::Punct(':'))) && word(i + 1, "NEW") && dot(i + 2) {
+            return name(i + 3).map(|c| (c, i + 4));
+        }
+        None
+    };
+    let mut out = Vec::new();
+    for i in 0..toks.len() {
+        // :NEW.col := seq.NEXTVAL
+        if let Some((col, j)) = new_col(i) {
+            if matches!(at(j), Some(Tok::Punct(':'))) && matches!(at(j + 1), Some(Tok::Punct('=')))
+            {
+                if let Some((schema, seq, _)) = nextval(j + 2) {
+                    out.push(SeqAssign {
+                        column: col,
+                        seq_schema: schema,
+                        seq,
+                    });
+                }
+            }
+        }
+        // SELECT seq.NEXTVAL INTO :NEW.col
+        if word(i, "SELECT") {
+            if let Some((schema, seq, j)) = nextval(i + 1) {
+                if word(j, "INTO") {
+                    if let Some((col, _)) = new_col(j + 1) {
+                        out.push(SeqAssign {
+                            column: col,
+                            seq_schema: schema,
+                            seq,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,5 +407,51 @@ mod tests {
         assert_eq!(statement_range(&toks, 3, n), (0, 15));
         assert_eq!(statement_range(&toks, 20, n), (16, 32));
         assert_eq!(statement_range(&toks, n, n), (33, n));
+    }
+
+    #[test]
+    fn sequence_assignments_in_triggers() {
+        let a = |s: &str| {
+            sequence_assignments(s)
+                .into_iter()
+                .map(|x| (x.column, x.seq_schema, x.seq))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            a("begin :new.id := emp_seq.nextval; end;"),
+            vec![("ID".into(), None, "EMP_SEQ".into())]
+        );
+        assert_eq!(
+            a("BEGIN :NEW.emp_id := hr.emp_seq.NEXTVAL; END;"),
+            vec![("EMP_ID".into(), Some("HR".into()), "EMP_SEQ".into())]
+        );
+        assert_eq!(
+            a("begin select emp_seq.nextval into :new.id from dual; end;"),
+            vec![("ID".into(), None, "EMP_SEQ".into())]
+        );
+        assert_eq!(a("if :new.id is null then :new.id := s1.nextval; end if; :new.audit_id := s2.nextval;").len(), 2);
+        assert_eq!(
+            a("begin :new.\"Mixed\" := s.nextval; end;"),
+            vec![("Mixed".into(), None, "S".into())]
+        );
+    }
+
+    #[test]
+    fn sequence_assignments_ignore_comments_strings_and_non_matches() {
+        let a = |s: &str| sequence_assignments(s).len();
+        assert_eq!(a("-- :new.id := s.nextval\nbegin null; end;"), 0);
+        assert_eq!(a("begin v := 'x :new.id := s.nextval'; end;"), 0);
+        assert_eq!(
+            a("begin :new.id := s.currval; end;"),
+            0,
+            "currval does not assign a new value"
+        );
+        assert_eq!(
+            a("begin :old.id := s.nextval; end;"),
+            0,
+            ":OLD cannot be assigned"
+        );
+        assert_eq!(a("begin x := s.nextval; end;"), 0, "plain variable");
+        assert_eq!(a(":new.id :="), 0);
     }
 }

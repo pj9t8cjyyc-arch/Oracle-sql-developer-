@@ -4,6 +4,7 @@ import type { Badge } from "../badges";
 
 const ROW_H = 24;
 const OVERSCAN = 20;
+const COL_W = 160;
 
 interface Props {
   columns: Column[];
@@ -31,7 +32,11 @@ export function ResultGrid({ columns, rows, onNearEnd, badges, selectedColumn, o
 
   const first = Math.max(0, Math.floor(top / ROW_H) - OVERSCAN);
   const last = Math.min(rows.length, Math.ceil((top + height) / ROW_H) + OVERSCAN);
-  const template = `56px repeat(${columns.length}, minmax(120px, 1fr))`;
+  // Same template and explicit minimum width for header and every row, so columns line up
+  // even when cell content is longer than the column.
+  const widths = columns.map((c) => Math.min(340, Math.max(COL_W, Math.round(c.name.length * 8.4 + (badges[c.name]?.length ?? 0) * 30 + 28))));
+  const template = `56px ${widths.map((w) => `minmax(${w}px, 1fr)`).join(" ")}`;
+  const minWidth = 56 + widths.reduce((a, b) => a + b, 0);
 
   return (
     <div
@@ -43,7 +48,7 @@ export function ResultGrid({ columns, rows, onNearEnd, badges, selectedColumn, o
         if (el.scrollTop + el.clientHeight > el.scrollHeight - el.clientHeight) onNearEnd();
       }}
     >
-      <div className="grid-head" style={{ gridTemplateColumns: template }}>
+      <div className="grid-head" style={{ gridTemplateColumns: template, minWidth }}>
         <div className="rownum">#</div>
         {columns.map((c) => (
           <div key={c.name} className={`hcell ${selectedColumn === c.name ? "sel" : ""}`} title={`${c.name} ${c.data_type}`} onClick={() => onSelectColumn(c.name)}>
@@ -52,11 +57,11 @@ export function ResultGrid({ columns, rows, onNearEnd, badges, selectedColumn, o
           </div>
         ))}
       </div>
-      <div style={{ height: rows.length * ROW_H, position: "relative" }}>
+      <div style={{ height: rows.length * ROW_H, position: "relative", minWidth }}>
         {rows.slice(first, last).map((r, k) => {
           const i = first + k;
           return (
-            <div key={i} className="grid-row" style={{ top: i * ROW_H, height: ROW_H, gridTemplateColumns: template }}>
+            <div key={i} className="grid-row" style={{ top: i * ROW_H, height: ROW_H, gridTemplateColumns: template, minWidth }}>
               <div className="rownum">{i + 1}</div>
               {r.map((c, j) => (
                 <div key={j} className={c === null ? "null" : ""} title={c ?? "NULL"}>{c === null ? "(null)" : c}</div>

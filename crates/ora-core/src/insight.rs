@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::db::{collect, Database, Row};
+use crate::parse::sequence_assignments;
 use crate::schema::display_type;
 use crate::Result;
 
@@ -38,11 +39,26 @@ const SQL_INDEXES: &str = "SELECT /*insight:idx*/ i.index_name, i.uniqueness, ic
      FROM all_indexes i JOIN all_ind_columns ic ON ic.index_owner = i.owner AND ic.index_name = i.index_name \
      WHERE i.table_owner = :1 AND i.table_name = :2 ORDER BY i.index_name, ic.column_position";
 
-const SQL_TRIGGERS: &str = "SELECT /*insight:trg*/ t.trigger_name, t.trigger_type, t.triggering_event, t.status, tc.column_name, tc.column_list, tc.column_usage \
+const SQL_TRIGGERS: &str = "SELECT /*insight:trg*/ t.trigger_name, t.trigger_type, t.triggering_event, t.status, tc.column_name, tc.column_list, tc.column_usage, t.owner, t.when_clause \
      FROM all_triggers t \
      LEFT JOIN all_trigger_cols tc ON tc.trigger_owner = t.owner AND tc.trigger_name = t.trigger_name \
        AND tc.table_owner = t.table_owner AND tc.table_name = t.table_name \
      WHERE t.table_owner = :1 AND t.table_name = :2 ORDER BY t.trigger_name";
+
+const SQL_SEQUENCES: &str = "SELECT /*insight:seq*/ s.sequence_owner, s.sequence_name, s.min_value, s.max_value, s.increment_by, s.cycle_flag, s.cache_size, s.last_number, d.via_type, d.via_name \
+     FROM ( \
+       SELECT referenced_owner o, referenced_name n, 'TABLE' via_type, name via_name FROM all_dependencies \
+         WHERE owner = :1 AND name = :2 AND type = 'TABLE' AND referenced_type = 'SEQUENCE' \
+       UNION ALL \
+       SELECT d2.referenced_owner, d2.referenced_name, 'TRIGGER', d2.name FROM all_dependencies d2 \
+         JOIN all_triggers t ON t.owner = d2.owner AND t.trigger_name = d2.name \
+         WHERE t.table_owner = :1 AND t.table_name = :2 AND d2.type = 'TRIGGER' AND d2.referenced_type = 'SEQUENCE' \
+     ) d JOIN all_sequences s ON s.sequence_owner = d.o AND s.sequence_name = d.n ORDER BY s.sequence_name, d.via_name";
+
+/// 12c+ only; failures are ignored so older databases still work.
+const SQL_IDENTITY: &str = "SELECT /*insight:identity*/ column_name, generation_type, sequence_name FROM all_tab_identity_cols WHERE owner = :1 AND table_name = :2";
+
+const SQL_TRIGGER_SOURCE_HEAD: &str = "SELECT /*insight:src*/ name, text FROM all_source WHERE owner = :1 AND type = 'TRIGGER' AND name IN (";
 
 const SQL_DEPS: &str = "SELECT /*insight:deps*/ 'USES' dir, referenced_owner, referenced_name, referenced_type FROM all_dependencies \
        WHERE owner = :1 AND name = :2 AND type IN ('TABLE','VIEW') \
@@ -81,6 +97,37 @@ pub struct ColumnTrigger {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ColumnSeq {
+    pub owner: String,
+    pub name: String,
+    /// `identity` or `trigger`.
+    pub via: String,
+    pub via_name: String,
+}
+
+/// A sequence that feeds this table. Oracle has no direct table-to-sequence
+/// link, so each use is tagged with how it was found.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SeqUse {
+    pub owner: String,
+    pub name: String,
+    /// `identity` (GENERATED AS IDENTITY), `trigger` (assigned in a trigger
+    /// body) or `default` (the table depends on it, e.g. a column DEFAULT;
+    /// the column is not determined).
+    pub via: String,
+    pub via_name: String,
+    pub generation: Option<String>,
+    pub min: Option<String>,
+    pub max: Option<String>,
+    pub increment: Option<String>,
+    pub cycle: bool,
+    pub cache: Option<String>,
+    pub last_number: Option<String>,
+    /// Columns this sequence is known to populate (exact matches only).
+    pub columns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ColumnInsight {
     pub name: String,
     pub data_type: String,
@@ -95,6 +142,7 @@ pub struct ColumnInsight {
     pub checks: Vec<String>,
     pub indexes: Vec<ColumnIndex>,
     pub triggers: Vec<ColumnTrigger>,
+    pub sequences: Vec<ColumnSeq>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -113,6 +161,10 @@ pub struct TriggerInfo {
     pub event: String,
     pub enabled: bool,
     pub columns: Vec<String>,
+    pub owner: String,
+    pub when_clause: Option<String>,
+    /// Sequences this trigger uses (from dependencies and parsed assignments).
+    pub sequences: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -137,6 +189,7 @@ pub struct TableInsight {
     pub columns: Vec<ColumnInsight>,
     pub indexes: Vec<IndexInfo>,
     pub triggers: Vec<TriggerInfo>,
+    pub sequences: Vec<SeqUse>,
     /// Tables whose foreign keys point at this table.
     pub referenced_by: Vec<ChildFk>,
     pub uses: Vec<Dependency>,
@@ -181,11 +234,23 @@ pub fn table_insight(db: &dyn Database, owner: &str, table: &str) -> Result<Tabl
             checks: vec![],
             indexes: vec![],
             triggers: vec![],
+            sequences: vec![],
         })
         .collect();
 
     // Constraints. Rows are (constraint, type, column, status, condition, r_owner, r_table, r_column).
-    let (_, rows) = collect(db, SQL_CONSTRAINTS, &b2)?;
+    // SEARCH_CONDITION_VC exists from 12.2; fall back to no condition text on older versions.
+    let rows = match collect(db, SQL_CONSTRAINTS, &b2) {
+        Ok((_, rows)) => rows,
+        Err(_) => {
+            collect(
+                db,
+                &SQL_CONSTRAINTS.replace("k.search_condition_vc", "NULL"),
+                &b2,
+            )?
+            .1
+        }
+    };
     let mut unique_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for r in &rows {
         let (name, ctype, col) = (s(r, 0), s(r, 1), s(r, 2));
@@ -271,6 +336,9 @@ pub fn table_insight(db: &dyn Database, owner: &str, table: &str) -> Result<Tabl
                 event: s(r, 2),
                 enabled: s(r, 3) == "ENABLED",
                 columns: vec![],
+                owner: opt(r, 7).unwrap_or_else(|| owner.to_string()),
+                when_clause: opt(r, 8).map(|w| w.trim().to_string()),
+                sequences: vec![],
             });
         }
         if let Some(col) = opt(r, 4) {
@@ -310,6 +378,137 @@ pub fn table_insight(db: &dyn Database, owner: &str, table: &str) -> Result<Tabl
         }
     }
 
+    // Sequences: the table's own dependencies (e.g. DEFAULT seq.NEXTVAL), its triggers, and identity columns.
+    let optional =
+        |sql: &str, binds: &[String]| collect(db, sql, binds).map(|x| x.1).unwrap_or_default();
+    let mut sequences: Vec<SeqUse> = Vec::new();
+    for r in &optional(SQL_SEQUENCES, &b2) {
+        let via = if s(r, 8) == "TRIGGER" {
+            "trigger"
+        } else {
+            "default"
+        };
+        sequences.push(SeqUse {
+            owner: s(r, 0),
+            name: s(r, 1),
+            via: via.into(),
+            via_name: s(r, 9),
+            generation: None,
+            min: opt(r, 2),
+            max: opt(r, 3),
+            increment: opt(r, 4),
+            cycle: s(r, 5) == "Y",
+            cache: opt(r, 6),
+            last_number: opt(r, 7),
+            columns: vec![],
+        });
+    }
+    for r in &optional(SQL_IDENTITY, &b2) {
+        let (col, seq) = (s(r, 0), s(r, 2));
+        sequences.push(SeqUse {
+            owner: owner.to_string(),
+            name: seq.clone(),
+            via: "identity".into(),
+            via_name: String::new(),
+            generation: opt(r, 1),
+            min: None,
+            max: None,
+            increment: None,
+            cycle: false,
+            cache: None,
+            last_number: None,
+            columns: vec![col.clone()],
+        });
+        if let Some(c) = columns.iter_mut().find(|c| c.name == col) {
+            c.sequences.push(ColumnSeq {
+                owner: owner.to_string(),
+                name: seq,
+                via: "identity".into(),
+                via_name: String::new(),
+            });
+        }
+    }
+    // Trigger source tells us exactly which column a trigger fills from which sequence.
+    let mut owners: Vec<String> = triggers.iter().map(|t| t.owner.clone()).collect();
+    owners.sort();
+    owners.dedup();
+    for trigger_owner in owners {
+        let names: Vec<String> = triggers
+            .iter()
+            .filter(|t| t.owner == trigger_owner)
+            .map(|t| t.name.clone())
+            .collect();
+        let marks: Vec<String> = (2..2 + names.len()).map(|i| format!(":{i}")).collect();
+        let sql = format!(
+            "{SQL_TRIGGER_SOURCE_HEAD}{}) ORDER BY name, line",
+            marks.join(",")
+        );
+        let mut binds = vec![trigger_owner.clone()];
+        binds.extend(names);
+        let mut text: BTreeMap<String, String> = BTreeMap::new();
+        for r in &optional(&sql, &binds) {
+            text.entry(s(r, 0)).or_default().push_str(&s(r, 1));
+        }
+        for (trg, src) in &text {
+            for a in sequence_assignments(src) {
+                let seq_owner = a
+                    .seq_schema
+                    .clone()
+                    .unwrap_or_else(|| trigger_owner.clone());
+                if let Some(t) = triggers
+                    .iter_mut()
+                    .find(|t| &t.name == trg && t.owner == trigger_owner)
+                {
+                    if !t.sequences.contains(&a.seq) {
+                        t.sequences.push(a.seq.clone());
+                    }
+                }
+                match sequences.iter_mut().find(|u| {
+                    u.via == "trigger"
+                        && &u.via_name == trg
+                        && u.name == a.seq
+                        && u.owner == seq_owner
+                }) {
+                    Some(u) => {
+                        if !u.columns.contains(&a.column) {
+                            u.columns.push(a.column.clone());
+                        }
+                    }
+                    None => sequences.push(SeqUse {
+                        owner: seq_owner.clone(),
+                        name: a.seq.clone(),
+                        via: "trigger".into(),
+                        via_name: trg.clone(),
+                        generation: None,
+                        min: None,
+                        max: None,
+                        increment: None,
+                        cycle: false,
+                        cache: None,
+                        last_number: None,
+                        columns: vec![a.column.clone()],
+                    }),
+                }
+                if let Some(c) = columns.iter_mut().find(|c| c.name == a.column) {
+                    c.sequences.push(ColumnSeq {
+                        owner: seq_owner,
+                        name: a.seq.clone(),
+                        via: "trigger".into(),
+                        via_name: trg.clone(),
+                    });
+                }
+            }
+        }
+    }
+    // A trigger that depends on a sequence but whose assignment we could not parse (dynamic SQL, a variable in between).
+    for u in sequences.iter().filter(|u| u.via == "trigger") {
+        if let Some(t) = triggers.iter_mut().find(|t| t.name == u.via_name) {
+            if !t.sequences.contains(&u.name) {
+                t.sequences.push(u.name.clone());
+            }
+        }
+    }
+
     let referenced_by = collect(db, SQL_CHILDREN, &b2)?
         .1
         .iter()
@@ -341,6 +540,7 @@ pub fn table_insight(db: &dyn Database, owner: &str, table: &str) -> Result<Tabl
         columns,
         indexes,
         triggers,
+        sequences,
         referenced_by,
         uses,
         used_by,
@@ -670,12 +870,17 @@ mod tests {
     #[test]
     fn identifiers_are_always_bound() {
         let db = emp_db();
-        table_insight(&db, "HR", "EMP\" OR 1=1 --").unwrap();
+        let evil = "EMP\" OR 1=1 --";
+        table_insight(&db, "HR", evil).unwrap();
         let log = db.log.lock().unwrap();
-        assert!(log
-            .calls
-            .iter()
-            .all(|(sql, binds)| !sql.contains("OR 1=1") && binds.len() == 2));
+        for (sql, binds) in &log.calls {
+            assert!(!sql.contains("OR 1=1"), "hostile text reached SQL: {sql}");
+            if !sql.contains("insight:src") {
+                // every table-scoped query binds exactly (owner, table)
+                assert_eq!(binds.len(), 2, "{sql}");
+                assert_eq!(binds[1], evil);
+            }
+        }
     }
 
     #[test]
@@ -687,5 +892,249 @@ mod tests {
         )
         .unwrap();
         assert!(i.columns.is_empty() && i.indexes.is_empty() && i.triggers.is_empty());
+    }
+
+    /// A table whose PK is filled by a trigger, with an identity column and a DEFAULT-sequence dependency.
+    fn seq_db() -> FakeDb {
+        let n = None;
+        let none = || t(&["x"], vec![]);
+        FakeDb::new()
+            .with_table("insight:tabcomment", none())
+            .with_table(
+                "insight:cols",
+                t(
+                    &[
+                        "n", "t", "dl", "cl", "cu", "p", "sc", "nl", "cm", "nd", "nn", "h",
+                    ],
+                    vec![
+                        vec![
+                            Some("ID"),
+                            Some("NUMBER"),
+                            Some("22"),
+                            n,
+                            n,
+                            Some("10"),
+                            Some("0"),
+                            Some("N"),
+                            n,
+                            n,
+                            n,
+                            n,
+                        ],
+                        vec![
+                            Some("CODE"),
+                            Some("NUMBER"),
+                            Some("22"),
+                            n,
+                            n,
+                            n,
+                            n,
+                            Some("N"),
+                            n,
+                            n,
+                            n,
+                            n,
+                        ],
+                        vec![
+                            Some("NOTE"),
+                            Some("VARCHAR2"),
+                            Some("10"),
+                            Some("10"),
+                            Some("B"),
+                            n,
+                            n,
+                            Some("Y"),
+                            n,
+                            n,
+                            n,
+                            n,
+                        ],
+                    ],
+                ),
+            )
+            .with_table("insight:cons", none())
+            .with_table("insight:idx", none())
+            .with_table(
+                "insight:trg",
+                t(
+                    &["tn", "tt", "ev", "st", "col", "cl", "cu", "ow", "wh"],
+                    vec![vec![
+                        Some("EMP_BI"),
+                        Some("BEFORE EACH ROW"),
+                        Some("INSERT"),
+                        Some("ENABLED"),
+                        Some("ID"),
+                        Some("NO"),
+                        Some("NEW"),
+                        Some("HR"),
+                        Some("  new.id IS NULL "),
+                    ]],
+                ),
+            )
+            .with_table("insight:children", none())
+            .with_table("insight:deps", none())
+            .with_table(
+                "insight:seq",
+                t(
+                    &["so", "sn", "mn", "mx", "inc", "cy", "ca", "ln", "vt", "vn"],
+                    vec![
+                        vec![
+                            Some("HR"),
+                            Some("AUDIT_SEQ"),
+                            Some("1"),
+                            Some("9999"),
+                            Some("1"),
+                            Some("N"),
+                            Some("20"),
+                            Some("500"),
+                            Some("TABLE"),
+                            Some("EMP"),
+                        ],
+                        vec![
+                            Some("HR"),
+                            Some("EMP_SEQ"),
+                            Some("1"),
+                            Some("999999"),
+                            Some("5"),
+                            Some("Y"),
+                            Some("20"),
+                            Some("1050"),
+                            Some("TRIGGER"),
+                            Some("EMP_BI"),
+                        ],
+                    ],
+                ),
+            )
+            .with_table(
+                "insight:identity",
+                t(
+                    &["c", "g", "s"],
+                    vec![vec![Some("CODE"), Some("ALWAYS"), Some("ISEQ$$_1234")]],
+                ),
+            )
+            .with_table(
+                "insight:src",
+                t(
+                    &["n", "t"],
+                    vec![
+                        vec![
+                            Some("EMP_BI"),
+                            Some("trigger emp_bi before insert on emp for each row\n"),
+                        ],
+                        vec![
+                            Some("EMP_BI"),
+                            Some("begin :new.id := emp_seq.nextval; end;"),
+                        ],
+                    ],
+                ),
+            )
+    }
+
+    #[test]
+    fn sequences_are_attributed_exactly_and_tagged_by_how_they_were_found() {
+        let db = seq_db();
+        let i = table_insight(&db, "HR", "EMP").unwrap();
+        let by = |n: &str| i.sequences.iter().find(|s| s.name == n).unwrap().clone();
+
+        let trg = by("EMP_SEQ");
+        assert_eq!(
+            (trg.via.as_str(), trg.via_name.as_str(), trg.columns.clone()),
+            ("trigger", "EMP_BI", vec!["ID".to_string()])
+        );
+        assert_eq!(
+            (
+                trg.increment.as_deref(),
+                trg.cache.as_deref(),
+                trg.last_number.as_deref(),
+                trg.cycle
+            ),
+            (Some("5"), Some("20"), Some("1050"), true)
+        );
+
+        let dflt = by("AUDIT_SEQ");
+        assert_eq!(dflt.via, "default");
+        assert!(
+            dflt.columns.is_empty(),
+            "a bare dependency must not be guessed onto a column"
+        );
+
+        let ident = by("ISEQ$$_1234");
+        assert_eq!(
+            (
+                ident.via.as_str(),
+                ident.generation.as_deref(),
+                ident.columns.clone()
+            ),
+            ("identity", Some("ALWAYS"), vec!["CODE".to_string()])
+        );
+
+        let col = |n: &str| i.columns.iter().find(|c| c.name == n).unwrap().clone();
+        assert_eq!(
+            col("ID").sequences,
+            vec![ColumnSeq {
+                owner: "HR".into(),
+                name: "EMP_SEQ".into(),
+                via: "trigger".into(),
+                via_name: "EMP_BI".into()
+            }]
+        );
+        assert_eq!(col("CODE").sequences[0].via, "identity");
+        assert!(col("NOTE").sequences.is_empty());
+    }
+
+    #[test]
+    fn trigger_details_include_when_clause_owner_and_sequences() {
+        let db = seq_db();
+        let i = table_insight(&db, "HR", "EMP").unwrap();
+        let t = &i.triggers[0];
+        assert_eq!(
+            (
+                t.name.as_str(),
+                t.owner.as_str(),
+                t.when_clause.as_deref(),
+                t.sequences.clone()
+            ),
+            (
+                "EMP_BI",
+                "HR",
+                Some("new.id IS NULL"),
+                vec!["EMP_SEQ".to_string()]
+            )
+        );
+        // the source lookup is bound by owner and trigger name, never concatenated
+        let log = db.log.lock().unwrap();
+        let (sql, binds) = log
+            .calls
+            .iter()
+            .find(|(q, _)| q.contains("insight:src"))
+            .unwrap();
+        assert_eq!(binds, &vec!["HR".to_string(), "EMP_BI".to_string()]);
+        assert!(sql.contains("IN (:2)") && !sql.contains("EMP_BI"));
+    }
+
+    #[test]
+    fn older_databases_without_optional_views_still_produce_insight() {
+        // 11g/12.1: no identity view, no SEARCH_CONDITION_VC
+        let db = emp_db()
+            .with_error(
+                "all_tab_identity_cols",
+                "ORA-00942: table or view does not exist",
+            )
+            .with_error("search_condition_vc", "ORA-00904: invalid identifier");
+        let i = table_insight(&db, "HR", "EMP").unwrap();
+        assert!(i
+            .columns
+            .iter()
+            .find(|c| c.name == "EMP_ID" || c.name == "ID")
+            .is_some());
+        assert!(
+            i.columns
+                .iter()
+                .find(|c| c.name == "ID")
+                .unwrap()
+                .primary_key,
+            "constraints still loaded via the fallback query"
+        );
+        assert!(i.sequences.is_empty());
     }
 }

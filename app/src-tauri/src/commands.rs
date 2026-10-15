@@ -2,8 +2,11 @@
 //! errors to strings and move blocking database calls off the UI thread.
 
 use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
+use ora_core::catalog::{self, Dependencies, ObjectEntry, SequenceInfo};
 use ora_core::comments;
 use ora_core::complete::{self, Completions};
 use ora_core::db::Database;
@@ -13,13 +16,15 @@ use ora_core::parse::{self, TableRef};
 use ora_core::search::{self, Hit, SearchIndex, SearchQuery};
 use ora_core::oracle_backend::OracleDb;
 use ora_core::profile::ConnectionProfile;
-use ora_core::schema::{self, DbObject, TableColumn};
+use ora_core::schema;
 use ora_core::session::{Page, QueryManager, RunOptions, RunResult};
 use tauri::{AppHandle, Manager, State};
 
 #[derive(Default)]
 pub struct AppState {
-    conn: Mutex<Option<Connected>>,
+    /// Several databases can be connected at once; each has an id.
+    conns: Mutex<HashMap<String, Connected>>,
+    next_id: AtomicU64,
     profiles_lock: Mutex<()>,
 }
 
@@ -44,8 +49,8 @@ fn index_file_name(p: &ConnectionProfile) -> String {
 
 type CmdResult<T> = Result<T, String>;
 
-fn current(state: &State<'_, AppState>) -> CmdResult<Connected> {
-    state.conn.lock().unwrap().clone().ok_or_else(|| "not connected".to_string())
+fn current(state: &State<'_, AppState>, conn: &str) -> CmdResult<Connected> {
+    state.conns.lock().unwrap().get(conn).cloned().ok_or_else(|| format!("not connected ({conn})"))
 }
 
 async fn blocking<T, F>(f: F) -> CmdResult<T>
@@ -105,7 +110,7 @@ pub fn delete_profile(app: AppHandle, state: State<'_, AppState>, name: String) 
 }
 
 #[tauri::command]
-pub async fn connect(app: AppHandle, state: State<'_, AppState>, profile: ConnectionProfile, password: String) -> CmdResult<()> {
+pub async fn connect(app: AppHandle, state: State<'_, AppState>, profile: ConnectionProfile, password: String) -> CmdResult<String> {
     let env = profile.environment;
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -116,73 +121,65 @@ pub async fn connect(app: AppHandle, state: State<'_, AppState>, profile: Connec
     })
     .await?;
     let db: Arc<dyn Database> = Arc::new(db);
-    *state.conn.lock().unwrap() = Some(Connected {
-        queries: Arc::new(QueryManager::new(db.clone(), env)),
-        db,
-        meta: Arc::new(RwLock::new(MetaCache::default())),
-        index: Arc::new(Mutex::new(index)),
-    });
-    Ok(())
+    let id = format!("c{}", state.next_id.fetch_add(1, Ordering::Relaxed) + 1);
+    state.conns.lock().unwrap().insert(
+        id.clone(),
+        Connected {
+            queries: Arc::new(QueryManager::new(db.clone(), env)),
+            db,
+            meta: Arc::new(RwLock::new(MetaCache::default())),
+            index: Arc::new(Mutex::new(index)),
+        },
+    );
+    Ok(id)
 }
 
 #[tauri::command]
-pub fn disconnect(state: State<'_, AppState>) {
+pub fn disconnect(state: State<'_, AppState>, conn: String) {
     // Dropping the last Arc closes the connection.
-    *state.conn.lock().unwrap() = None;
+    state.conns.lock().unwrap().remove(&conn);
 }
 
 #[tauri::command]
-pub async fn run_query(state: State<'_, AppState>, sql: String, confirmed: bool, page_size: usize) -> CmdResult<RunResult> {
-    let q = current(&state)?.queries;
+pub async fn run_query(state: State<'_, AppState>, conn: String, sql: String, confirmed: bool, page_size: usize) -> CmdResult<RunResult> {
+    let q = current(&state, &conn)?.queries;
     blocking(move || q.run(&sql, RunOptions { page_size, confirmed, ..Default::default() })).await
 }
 
 #[tauri::command]
-pub async fn fetch_more(state: State<'_, AppState>, handle: u64, page_size: usize) -> CmdResult<Page> {
-    let q = current(&state)?.queries;
+pub async fn fetch_more(state: State<'_, AppState>, conn: String, handle: u64, page_size: usize) -> CmdResult<Page> {
+    let q = current(&state, &conn)?.queries;
     blocking(move || q.fetch_more(handle, page_size)).await
 }
 
 #[tauri::command]
-pub fn close_query(state: State<'_, AppState>, handle: u64) -> CmdResult<()> {
-    current(&state)?.queries.close(handle);
+pub fn close_query(state: State<'_, AppState>, conn: String, handle: u64) -> CmdResult<()> {
+    current(&state, &conn)?.queries.close(handle);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn cancel_query(state: State<'_, AppState>) -> CmdResult<()> {
-    let q = current(&state)?.queries;
+pub async fn cancel_query(state: State<'_, AppState>, conn: String) -> CmdResult<()> {
+    let q = current(&state, &conn)?.queries;
     blocking(move || q.cancel()).await
 }
 
 #[tauri::command]
-pub async fn commit(state: State<'_, AppState>) -> CmdResult<()> {
-    let q = current(&state)?.queries;
+pub async fn commit(state: State<'_, AppState>, conn: String) -> CmdResult<()> {
+    let q = current(&state, &conn)?.queries;
     blocking(move || q.commit()).await
 }
 
 #[tauri::command]
-pub async fn rollback(state: State<'_, AppState>) -> CmdResult<()> {
-    let q = current(&state)?.queries;
+pub async fn rollback(state: State<'_, AppState>, conn: String) -> CmdResult<()> {
+    let q = current(&state, &conn)?.queries;
     blocking(move || q.rollback()).await
 }
 
 #[tauri::command]
-pub async fn list_schemas(state: State<'_, AppState>) -> CmdResult<Vec<String>> {
-    let db = current(&state)?.db;
+pub async fn list_schemas(state: State<'_, AppState>, conn: String) -> CmdResult<Vec<String>> {
+    let db = current(&state, &conn)?.db;
     blocking(move || schema::schemas(db.as_ref())).await
-}
-
-#[tauri::command]
-pub async fn list_objects(state: State<'_, AppState>, owner: String) -> CmdResult<Vec<DbObject>> {
-    let db = current(&state)?.db;
-    blocking(move || schema::objects(db.as_ref(), &owner)).await
-}
-
-#[tauri::command]
-pub async fn list_columns(state: State<'_, AppState>, owner: String, table: String) -> CmdResult<Vec<TableColumn>> {
-    let db = current(&state)?.db;
-    blocking(move || schema::columns(db.as_ref(), &owner, &table)).await
 }
 
 #[derive(serde::Serialize)]
@@ -195,8 +192,8 @@ pub struct RefreshStats {
 /// Load a schema's catalog for autocomplete and rebuild its search index.
 /// `include_source` also indexes PL/SQL source lines (capped).
 #[tauri::command]
-pub async fn refresh_metadata(state: State<'_, AppState>, owner: String, include_source: bool) -> CmdResult<RefreshStats> {
-    let c = current(&state)?;
+pub async fn refresh_metadata(state: State<'_, AppState>, conn: String, owner: String, include_source: bool) -> CmdResult<RefreshStats> {
+    let c = current(&state, &conn)?;
     blocking(move || {
         let schema = meta::load_schema(c.db.as_ref(), &owner)?;
         let mut docs = search::docs_from_meta(&schema);
@@ -215,15 +212,15 @@ pub async fn refresh_metadata(state: State<'_, AppState>, owner: String, include
 }
 
 #[tauri::command]
-pub async fn table_insight(state: State<'_, AppState>, owner: String, table: String) -> CmdResult<TableInsight> {
-    let db = current(&state)?.db;
+pub async fn table_insight(state: State<'_, AppState>, conn: String, owner: String, table: String) -> CmdResult<TableInsight> {
+    let db = current(&state, &conn)?.db;
     blocking(move || insight::table_insight(db.as_ref(), &owner, &table)).await
 }
 
 /// In-memory and fast; `cursor` is a UTF-16 offset (CodeMirror coordinates).
 #[tauri::command]
-pub fn complete(state: State<'_, AppState>, sql: String, cursor: usize, owner: String) -> CmdResult<Completions> {
-    let c = current(&state)?;
+pub fn complete(state: State<'_, AppState>, conn: String, sql: String, cursor: usize, owner: String) -> CmdResult<Completions> {
+    let c = current(&state, &conn)?;
     let cache = c.meta.read().unwrap();
     Ok(complete::complete(&cache, &owner, &sql, cursor))
 }
@@ -234,8 +231,8 @@ pub fn references(sql: String) -> Vec<TableRef> {
 }
 
 #[tauri::command]
-pub async fn search_objects(state: State<'_, AppState>, text: String, owner: Option<String>, kinds: Vec<String>, limit: usize) -> CmdResult<Vec<Hit>> {
-    let index = current(&state)?.index;
+pub async fn search_objects(state: State<'_, AppState>, conn: String, text: String, owner: Option<String>, kinds: Vec<String>, limit: usize) -> CmdResult<Vec<Hit>> {
+    let index = current(&state, &conn)?.index;
     blocking(move || index.lock().unwrap().search(&SearchQuery { text, owner, kinds, limit })).await
 }
 
@@ -246,7 +243,54 @@ pub fn preview_comment(owner: String, table: String, column: Option<String>, tex
 }
 
 #[tauri::command]
-pub async fn save_comment(state: State<'_, AppState>, owner: String, table: String, column: Option<String>, text: String) -> CmdResult<String> {
-    let db = current(&state)?.db;
+pub async fn save_comment(state: State<'_, AppState>, conn: String, owner: String, table: String, column: Option<String>, text: String) -> CmdResult<String> {
+    let db = current(&state, &conn)?.db;
     blocking(move || comments::save_comment(db.as_ref(), &owner, &table, column.as_deref(), &text)).await
+}
+
+#[tauri::command]
+pub async fn object_counts(state: State<'_, AppState>, conn: String, owner: String) -> CmdResult<BTreeMap<String, u64>> {
+    let db = current(&state, &conn)?.db;
+    blocking(move || catalog::object_counts(db.as_ref(), &owner)).await
+}
+
+#[tauri::command]
+pub async fn list_objects(state: State<'_, AppState>, conn: String, owner: String, kind: String) -> CmdResult<Vec<ObjectEntry>> {
+    let db = current(&state, &conn)?.db;
+    blocking(move || catalog::list_objects(db.as_ref(), &owner, &kind)).await
+}
+
+#[tauri::command]
+pub async fn object_source(state: State<'_, AppState>, conn: String, owner: String, name: String, kind: String) -> CmdResult<String> {
+    let db = current(&state, &conn)?.db;
+    blocking(move || catalog::object_source(db.as_ref(), &owner, &name, &kind)).await
+}
+
+#[tauri::command]
+pub async fn object_ddl(state: State<'_, AppState>, conn: String, owner: String, name: String, kind: String) -> CmdResult<String> {
+    let db = current(&state, &conn)?.db;
+    blocking(move || catalog::object_ddl(db.as_ref(), &owner, &name, &kind)).await
+}
+
+#[tauri::command]
+pub async fn sequence_info(state: State<'_, AppState>, conn: String, owner: String, name: String) -> CmdResult<Option<SequenceInfo>> {
+    let db = current(&state, &conn)?.db;
+    blocking(move || catalog::sequence_info(db.as_ref(), &owner, &name)).await
+}
+
+/// First rows of a table through the normal query session (so paging and cursor limits apply).
+#[tauri::command]
+pub async fn preview_table(state: State<'_, AppState>, conn: String, owner: String, table: String, limit: usize) -> CmdResult<RunResult> {
+    let q = current(&state, &conn)?.queries;
+    blocking(move || {
+        let sql = catalog::preview_sql(&owner, &table, limit)?;
+        q.run(&sql, RunOptions { page_size: limit.clamp(1, 1000), ..Default::default() })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn object_dependencies(state: State<'_, AppState>, conn: String, owner: String, name: String) -> CmdResult<Dependencies> {
+    let db = current(&state, &conn)?.db;
+    blocking(move || catalog::dependencies(db.as_ref(), &owner, &name)).await
 }

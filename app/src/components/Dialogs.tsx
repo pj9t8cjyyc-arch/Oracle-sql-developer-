@@ -21,9 +21,9 @@ export function ConfirmDialog({ analysis, onCancel, onRun }: { analysis: Analysi
 
 const blank: Profile = { name: "", host: "", port: 1521, service: "", user: "", environment: "dev" };
 
-export function ConnectDialog({ profiles, error, busy, onConnect, onSave }: {
+export function ConnectDialog({ profiles, error, busy, onConnect, onSave, onCancel }: {
   profiles: Profile[]; error: string; busy: boolean;
-  onConnect(p: Profile, password: string): void; onSave(p: Profile): void;
+  onConnect(p: Profile, password: string): void; onSave(p: Profile): void; onCancel?(): void;
 }) {
   const [p, setP] = useState<Profile>(profiles[0] ?? blank);
   const [password, setPassword] = useState("");
@@ -56,6 +56,7 @@ export function ConnectDialog({ profiles, error, busy, onConnect, onSave }: {
         </label>
         {error && <div className="error">{error}</div>}
         <div className="actions">
+          {onCancel && <button type="button" className="ghost" onClick={onCancel}>Cancel</button>}
           <button type="button" disabled={!ok} onClick={() => onSave(p)}>Save profile</button>
           <button type="submit" className="primary" disabled={!ok || busy}>{busy ? "Connecting…" : "Connect"}</button>
         </div>

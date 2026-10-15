@@ -9,7 +9,7 @@ use crate::{Error, Result};
 
 /// Quote an identifier taken from the dictionary (exact case). Rejects
 /// anything that could break out of the quotes.
-fn quote_ident(name: &str) -> Result<String> {
+pub fn quote_ident(name: &str) -> Result<String> {
     if name.is_empty() || name.len() > 128 {
         return Err(Error::Invalid("identifier must be 1-128 characters".into()));
     }

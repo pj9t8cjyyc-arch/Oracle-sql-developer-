@@ -44,6 +44,8 @@ pub struct FakeLog {
 pub struct FakeDb {
     /// First responder whose key is a substring of the (lower-cased) SQL wins.
     responders: Vec<(String, FakeTable)>,
+    /// Checked first: statements containing the key fail with the given message.
+    errors: Vec<(String, String)>,
     affected: Option<u64>,
     pub log: Arc<Mutex<FakeLog>>,
 }
@@ -54,6 +56,11 @@ impl FakeDb {
     }
     pub fn with_table(mut self, sql_contains: &str, t: FakeTable) -> Self {
         self.responders.push((sql_contains.to_lowercase(), t));
+        self
+    }
+    pub fn with_error(mut self, sql_contains: &str, message: &str) -> Self {
+        self.errors
+            .push((sql_contains.to_lowercase(), message.to_string()));
         self
     }
     pub fn with_affected(mut self, n: u64) -> Self {
@@ -87,6 +94,9 @@ impl Database for FakeDb {
             .calls
             .push((sql.to_string(), binds.to_vec()));
         let lower = sql.to_lowercase();
+        if let Some((_, m)) = self.errors.iter().find(|(k, _)| lower.contains(k)) {
+            return Err(Error::Database(m.clone()));
+        }
         if let Some((_, t)) = self.responders.iter().find(|(k, _)| lower.contains(k)) {
             return Ok(Outcome::Rows(Box::new(FakeCursor {
                 columns: t.columns.clone(),

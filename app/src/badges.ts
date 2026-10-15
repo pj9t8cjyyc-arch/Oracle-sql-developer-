@@ -1,7 +1,7 @@
 import type { Api } from "./api";
 import type { ColumnInsight, TableInsight, TableRef } from "./types";
 
-export interface Badge { text: string; title: string; tone: "key" | "fk" | "idx" | "trg" | "note" | "warn" }
+export interface Badge { text: string; title: string; tone: "key" | "fk" | "idx" | "trg" | "seq" | "note" | "warn" }
 
 export function columnBadges(c: ColumnInsight): Badge[] {
   const b: Badge[] = [];
@@ -17,6 +17,7 @@ export function columnBadges(c: ColumnInsight): Badge[] {
       tone: bad ? "warn" : "idx",
     });
   }
+  if (c.sequences.length) b.push({ text: "SEQ", title: c.sequences.map((q) => `${q.name} (${q.via === "identity" ? "identity column" : `set by trigger ${q.via_name}`})`).join("\n"), tone: "seq" });
   if (c.triggers.length) b.push({ text: `⚡${c.triggers.length}`, title: c.triggers.map((t) => `${t.name} (${t.timing} ${t.event}${t.enabled ? "" : ", DISABLED"})`).join("\n"), tone: "trg" });
   if (c.checks.length) b.push({ text: "CK", title: c.checks.join("\n"), tone: "note" });
   if (c.comment) b.push({ text: "✎", title: c.comment, tone: "note" });
@@ -26,12 +27,12 @@ export function columnBadges(c: ColumnInsight): Badge[] {
 /** Fetch insight once per table; cache the promise so concurrent callers share it. */
 export class InsightCache {
   private m = new Map<string, Promise<TableInsight>>();
-  constructor(private api: Api) {}
+  constructor(private api: Api, private conn: string) {}
   get(owner: string, table: string): Promise<TableInsight> {
     const k = `${owner}.${table}`;
     let p = this.m.get(k);
     if (!p) {
-      p = this.api.tableInsight(owner, table);
+      p = this.api.tableInsight(this.conn, owner, table);
       p.catch(() => this.m.delete(k));
       this.m.set(k, p);
     }
