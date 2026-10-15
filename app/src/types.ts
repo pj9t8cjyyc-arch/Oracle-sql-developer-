@@ -146,14 +146,16 @@ export interface MemberRef { package: string; member: string }
 export interface PkgMember {
   name: string; kind: "PROCEDURE" | "FUNCTION"; signature: string; overload: string | null; public: boolean;
   calls: MemberRef[]; reads: string[]; writes: string[]; called_by: MemberRef[]; internal_refs: number;
+  source: "plscope" | "scan"; scan_only: string[];
   status: "used" | "unreferenced" | "unused_private";
 }
 export interface TableUse { table: string; read: boolean; write: boolean }
 export interface PackageDetail {
   name: string; spec_status: string; body_status: string | null; wrapped: boolean; body_lines: number; members: PkgMember[];
   calls_packages: string[]; called_by: string[]; tables: TableUse[]; unreferenced: number; unused_private: number;
+  analysis: "plscope" | "scan" | "none"; unattributed: number;
 }
-export interface PackageAnalysis { owner: string; packages: PackageDetail[]; wrapped: number; invalid: number }
+export interface PackageAnalysis { owner: string; packages: PackageDetail[]; wrapped: number; invalid: number; plscope_packages: number; scope_error: string | null }
 
 export interface GNode { id: string; owner: string; name: string; kind: string }
 export interface GEdge { from: string; to: string; kind: "uses" | "fk" | "indexes" | "reads" | "writes" | "calls" | "runs" }
@@ -165,7 +167,7 @@ export interface Subgraph { focus: string; nodes: SNode[]; edges: GEdge[]; trunc
 
 // ---- knowledge base + markdown export
 export interface Gap { severity: "warning" | "info"; area: string; message: string }
-export interface Coverage { gaps: Gap[]; packages: number; packages_scanned: number; packages_wrapped: number; members: number; dynamic_sql_sites: number }
+export interface Coverage { gaps: Gap[]; packages: number; packages_scanned: number; packages_wrapped: number; packages_plscope: number; members: number; dynamic_sql_sites: number }
 export interface KbSummary {
   owner: string; taken_at: number; tables: number; views: number; packages: number; members: number; triggers: number; indexes: number;
   sequences: number; nodes: number; edges: number; exact_links: number; heuristic_links: number; coverage: Coverage;

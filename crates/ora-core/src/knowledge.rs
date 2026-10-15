@@ -4,7 +4,9 @@
 //!
 //! Sources, most to least certain:
 //! * `dictionary` (exact): `ALL_DEPENDENCIES`, constraints, indexes, triggers, synonyms, jobs.
-//! * `scan` (heuristic): a text scan of package bodies (see [`crate::packages`]); gives member and
+//! * `plscope` (exact): PL/Scope data (`ALL_IDENTIFIERS`, `ALL_STATEMENTS`) for package bodies compiled
+//!   with `PLSCOPE_SETTINGS='IDENTIFIERS:ALL, STATEMENTS:ALL'`, with line numbers.
+//! * `scan` (heuristic): a text scan of package bodies (see [`crate::packages`]) for the rest; gives member and
 //!   line level reads/writes/calls but misses dynamic SQL.
 //!
 //! What we *cannot* see is listed in [`Coverage`] instead of being silently absent.
@@ -119,7 +121,7 @@ pub struct Evidence {
     pub from: String,
     pub to: String,
     pub kind: String,
-    /// `dictionary` or `scan`.
+    /// `dictionary`, `plscope` or `scan`.
     pub source: String,
     /// `exact` or `heuristic`.
     pub confidence: String,
@@ -140,6 +142,8 @@ pub struct Coverage {
     pub packages: usize,
     pub packages_scanned: usize,
     pub packages_wrapped: usize,
+    /// Packages analysed with PL/Scope (exact) rather than the text scan.
+    pub packages_plscope: usize,
     pub members: usize,
     pub dynamic_sql_sites: usize,
 }
@@ -240,6 +244,14 @@ impl Knowledge {
     }
 }
 
+fn warn(gaps: &mut Vec<Gap>, area: &str, message: String) {
+    gaps.push(Gap {
+        severity: "warning".into(),
+        area: area.into(),
+        message,
+    });
+}
+
 fn rank(kind: &str) -> u8 {
     match kind {
         "writes" => 6,
@@ -290,7 +302,7 @@ impl Builder {
             to: to.to_string(),
             kind: kind.to_string(),
             source: source.to_string(),
-            confidence: if source == "dictionary" {
+            confidence: if matches!(source, "dictionary" | "plscope") {
                 "exact"
             } else {
                 "heuristic"
@@ -309,13 +321,6 @@ impl Builder {
 pub fn collect_schema(db: &dyn Database, owner: &str, taken_at: i64) -> Result<Knowledge> {
     let b = [owner.to_string()];
     let mut gaps: Vec<Gap> = Vec::new();
-    let mut warn = |area: &str, message: String| {
-        gaps.push(Gap {
-            severity: "warning".into(),
-            area: area.into(),
-            message,
-        })
-    };
 
     // ---- tables and views
     let (_, rows) = collect(
@@ -503,7 +508,7 @@ pub fn collect_schema(db: &dyn Database, owner: &str, taken_at: i64) -> Result<K
                 });
             }
         }
-        Err(e) => warn("grants", format!("Grants could not be read ({e}); access rights are not in the knowledge base.")),
+        Err(e) => warn(&mut gaps, "grants", format!("Grants could not be read ({e}); access rights are not in the knowledge base.")),
     }
     let mut jobs: Vec<JobFacts> = Vec::new();
     match collect(
@@ -522,7 +527,7 @@ pub fn collect_schema(db: &dyn Database, owner: &str, taken_at: i64) -> Result<K
                 })
                 .collect()
         }
-        Err(e) => warn("jobs", format!("Scheduler jobs could not be read ({e}); jobs that call this schema are not shown.")),
+        Err(e) => warn(&mut gaps, "jobs", format!("Scheduler jobs could not be read ({e}); jobs that call this schema are not shown.")),
     }
     let mut deps: Vec<Row> = Vec::new();
     match collect(
@@ -532,7 +537,7 @@ pub fn collect_schema(db: &dyn Database, owner: &str, taken_at: i64) -> Result<K
         &b,
     ) {
         Ok((_, rows)) => deps = rows,
-        Err(e) => warn("dependencies", format!("ALL_DEPENDENCIES could not be read ({e}); links between objects are incomplete.")),
+        Err(e) => warn(&mut gaps, "dependencies", format!("ALL_DEPENDENCIES could not be read ({e}); links between objects are incomplete.")),
     }
     let mut ext: Vec<Row> = Vec::new();
     if let Ok((_, rows)) = collect(
@@ -666,6 +671,11 @@ pub fn collect_schema(db: &dyn Database, owner: &str, taken_at: i64) -> Result<K
         .map(|t| (t.name.as_str(), t.kind.as_str()))
         .collect();
     for p in &packages.packages {
+        let src = if p.analysis == "plscope" {
+            "plscope"
+        } else {
+            "scan"
+        };
         let pid = g.node("PACKAGE", owner, &p.name);
         let mut per_table: BTreeMap<(String, bool), BTreeMap<String, BTreeSet<usize>>> =
             BTreeMap::new();
@@ -684,7 +694,7 @@ pub fn collect_schema(db: &dyn Database, owner: &str, taken_at: i64) -> Result<K
                     &pid,
                     &to,
                     "calls",
-                    "scan",
+                    src,
                     format!("{}.{} -> {}.{}", p.name, m.name, c.package, c.member),
                 );
             }
@@ -711,7 +721,7 @@ pub fn collect_schema(db: &dyn Database, owner: &str, taken_at: i64) -> Result<K
                 &pid,
                 &to,
                 if write { "writes" } else { "reads" },
-                "scan",
+                src,
                 detail,
             );
         }
@@ -736,7 +746,7 @@ pub fn collect_schema(db: &dyn Database, owner: &str, taken_at: i64) -> Result<K
         .collect();
     let dyn_total: usize = dyn_sites.iter().map(|(_, n)| n).sum();
     if !wrapped.is_empty() {
-        warn("packages", format!("{} wrapped package(s) cannot be read, so what they call, read or write is unknown: {}.", wrapped.len(), wrapped.join(", ")));
+        warn(&mut gaps, "packages", format!("{} wrapped package(s) cannot be read, so what they call, read or write is unknown: {}.", wrapped.len(), wrapped.join(", ")));
     }
     if dyn_total > 0 {
         let top: Vec<String> = dyn_sites
@@ -744,7 +754,7 @@ pub fn collect_schema(db: &dyn Database, owner: &str, taken_at: i64) -> Result<K
             .take(10)
             .map(|(m, n)| format!("{m} ({n})"))
             .collect();
-        warn("dynamic SQL", format!("{dyn_total} dynamic SQL site(s) in {} member(s): the tables they touch cannot be known statically: {}{}.", dyn_sites.len(), top.join(", "), if dyn_sites.len() > 10 { ", …" } else { "" }));
+        warn(&mut gaps, "dynamic SQL", format!("{dyn_total} dynamic SQL site(s) in {} member(s): the tables they touch cannot be known statically: {}{}.", dyn_sites.len(), top.join(", "), if dyn_sites.len() > 10 { ", …" } else { "" }));
     }
     let invalid: Vec<String> = objects
         .iter()
@@ -753,6 +763,7 @@ pub fn collect_schema(db: &dyn Database, owner: &str, taken_at: i64) -> Result<K
         .collect();
     if !invalid.is_empty() {
         warn(
+            &mut gaps,
             "invalid objects",
             format!(
                 "{} object(s) are INVALID, so their dependencies may be stale: {}.",
@@ -768,6 +779,7 @@ pub fn collect_schema(db: &dyn Database, owner: &str, taken_at: i64) -> Result<K
         .collect();
     if !links.is_empty() {
         warn(
+            &mut gaps,
             "database links",
             format!(
                 "{} synonym(s) point over a database link; the remote side is not followed: {}.",
@@ -776,11 +788,44 @@ pub fn collect_schema(db: &dyn Database, owner: &str, taken_at: i64) -> Result<K
             ),
         );
     }
-    gaps.push(Gap {
-        severity: "info".into(),
-        area: "package calls".into(),
-        message: "Reads, writes and calls inside packages come from a text scan (heuristic). PL/Scope is not used yet.".into(),
-    });
+    const RECOMPILE: &str = "ALTER SESSION SET plscope_settings = 'IDENTIFIERS:ALL, STATEMENTS:ALL'; ALTER PACKAGE <name> COMPILE BODY;";
+    let scanned_only: Vec<&str> = packages
+        .packages
+        .iter()
+        .filter(|p| p.analysis == "scan")
+        .map(|p| p.name.as_str())
+        .collect();
+    if let Some(e) = &packages.scope_error {
+        warn(
+            &mut gaps,
+            "PL/Scope",
+            format!("{e}; package usage comes from the text scan (heuristic)."),
+        );
+    }
+    if packages.plscope_packages > 0 {
+        gaps.push(Gap {
+            severity: "info".into(),
+            area: "package calls".into(),
+            message: format!(
+                "{} of {} package(s) were analysed with PL/Scope (exact, with line numbers); the rest by text scan (heuristic).",
+                packages.plscope_packages,
+                packages.packages.len() - wrapped.len()
+            ),
+        });
+        if !scanned_only.is_empty() {
+            warn(&mut gaps, "PL/Scope", format!("{} package(s) were not compiled with PL/Scope and use the text scan: {}. To get exact data, run: {RECOMPILE}", scanned_only.len(), scanned_only.join(", ")));
+        }
+    } else if packages.scope_error.is_none() {
+        gaps.push(Gap {
+            severity: "info".into(),
+            area: "package calls".into(),
+            message: format!("Reads, writes and calls inside packages come from a text scan (heuristic): no package was compiled with PL/Scope. For exact data run: {RECOMPILE}"),
+        });
+    }
+    let unattributed: usize = packages.packages.iter().map(|p| p.unattributed).sum();
+    if unattributed > 0 {
+        warn(&mut gaps, "PL/Scope", format!("{unattributed} PL/Scope usage(s) fall outside every member's line range and are not attributed to a member."));
+    }
     gaps.push(Gap {
         severity: "info".into(),
         area: "callers".into(),
@@ -792,6 +837,7 @@ pub fn collect_schema(db: &dyn Database, owner: &str, taken_at: i64) -> Result<K
         packages: packages.packages.len(),
         packages_scanned: packages.packages.len() - wrapped.len(),
         packages_wrapped: wrapped.len(),
+        packages_plscope: packages.plscope_packages,
         members,
         dynamic_sql_sites: dyn_total,
     };
@@ -1051,5 +1097,79 @@ pub(crate) mod tests {
         assert_eq!(back.taken_at, 42);
         assert_eq!(back.edges, k.edges);
         assert_eq!(back.graph().info().edges, k.graph().info().edges);
+    }
+
+    #[test]
+    fn plscope_packages_give_exact_evidence_and_the_coverage_says_how_to_get_more() {
+        let with = db(true)
+            .with_table(
+                "pkg:ps_settings",
+                t(
+                    &["n", "s"],
+                    vec![vec![
+                        some("EMP_PKG"),
+                        some("IDENTIFIERS:ALL, STATEMENTS:ALL"),
+                    ]],
+                ),
+            )
+            .with_table("pkg:ps_calls", t(&["o", "l", "n", "d"], vec![]))
+            .with_table(
+                "pkg:ps_tables",
+                t(
+                    &["o", "l", "n", "s"],
+                    vec![vec![
+                        some("EMP_PKG"),
+                        some("3"),
+                        some("EMPLOYEES"),
+                        some("UPDATE"),
+                    ]],
+                ),
+            );
+        let k = collect_schema(&with, "HR", 1).unwrap();
+        let ev = k.evidence_between(&id("PACKAGE", "EMP_PKG"), &id("TABLE", "EMPLOYEES"));
+        let ps = ev
+            .iter()
+            .find(|e| e.source == "plscope")
+            .expect("plscope evidence");
+        assert_eq!(ps.confidence, "exact");
+        assert!(ps.detail.contains("lines 3"), "{}", ps.detail);
+        assert!(
+            !ev.iter().any(|e| e.source == "scan"),
+            "scan evidence is replaced for PL/Scope packages"
+        );
+        let all: String = k
+            .coverage
+            .gaps
+            .iter()
+            .map(|g| g.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            all.contains("1 of 1 package(s) were analysed with PL/Scope"),
+            "{all}"
+        );
+        assert_eq!(k.coverage.packages_plscope, 1);
+
+        let none = db(true).with_table(
+            "pkg:ps_settings",
+            t(
+                &["n", "s"],
+                vec![vec![some("EMP_PKG"), some("IDENTIFIERS:NONE")]],
+            ),
+        );
+        let k = collect_schema(&none, "HR", 1).unwrap();
+        let all: String = k
+            .coverage
+            .gaps
+            .iter()
+            .map(|g| g.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            all.contains("no package was compiled with PL/Scope")
+                && all.contains("ALTER SESSION SET plscope_settings"),
+            "{all}"
+        );
+        assert_eq!(k.coverage.packages_plscope, 0);
     }
 }

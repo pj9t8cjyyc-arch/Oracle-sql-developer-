@@ -786,3 +786,69 @@ fn knowledge_base_and_markdown_dossier_cover_a_known_schema() {
         drop_quietly(&db, &format!("DROP TABLE {t} PURGE"));
     }
 }
+
+#[test]
+#[ignore]
+fn plscope_gives_exact_calls_and_tables_for_packages_compiled_with_it() {
+    let (db, p) = connect();
+    let owner = p.user.to_uppercase();
+    drop_quietly(&db, "DROP PACKAGE it_ps_a");
+    drop_quietly(&db, "DROP PACKAGE it_ps_b");
+    drop_quietly(&db, "DROP TABLE it_ps_t PURGE");
+    drop_quietly(&db, "DROP TABLE it_ps_u PURGE");
+    exec(&db, "CREATE TABLE it_ps_t (id NUMBER)");
+    exec(&db, "CREATE TABLE it_ps_u (id NUMBER)");
+    exec(
+        &db,
+        "ALTER SESSION SET plscope_settings = 'IDENTIFIERS:ALL, STATEMENTS:ALL'",
+    );
+    exec(
+        &db,
+        "CREATE OR REPLACE PACKAGE it_ps_b AS PROCEDURE go; END it_ps_b;",
+    );
+    exec(
+        &db,
+        "CREATE OR REPLACE PACKAGE BODY it_ps_b AS PROCEDURE go IS BEGIN NULL; END; END it_ps_b;",
+    );
+    exec(
+        &db,
+        "CREATE OR REPLACE PACKAGE it_ps_a AS PROCEDURE run_it; END it_ps_a;",
+    );
+    exec(
+        &db,
+        "CREATE OR REPLACE PACKAGE BODY it_ps_a AS\n  PROCEDURE run_it IS\n    n NUMBER;\n  BEGIN\n    SELECT COUNT(*) INTO n FROM it_ps_t, it_ps_u;\n    INSERT INTO it_ps_u SELECT id FROM it_ps_t;\n    it_ps_b.go;\n  END;\nEND it_ps_a;",
+    );
+    let a = ora_core::packages::analyze_schema(&db, &owner).unwrap();
+    assert!(a.scope_error.is_none(), "{:?}", a.scope_error);
+    let pa = a
+        .packages
+        .iter()
+        .find(|x| x.name == "IT_PS_A")
+        .expect("IT_PS_A");
+    assert_eq!(pa.analysis, "plscope", "compiled with PL/Scope");
+    let m = pa.members.iter().find(|m| m.name == "RUN_IT").unwrap();
+    assert_eq!(m.source, "plscope");
+    assert!(
+        m.calls
+            .iter()
+            .any(|c| c.package == "IT_PS_B" && c.member == "GO"),
+        "{:?}",
+        m.calls
+    );
+    assert!(
+        m.reads.contains(&"IT_PS_T".to_string()) && m.reads.contains(&"IT_PS_U".to_string()),
+        "second table of a FROM list: {:?}",
+        m.reads
+    );
+    assert!(m.writes.contains(&"IT_PS_U".to_string()));
+    assert!(
+        m.table_lines.iter().any(|t| t.line == 6),
+        "line numbers: {:?}",
+        m.table_lines
+    );
+    assert_eq!(pa.unattributed, 0);
+    drop_quietly(&db, "DROP PACKAGE it_ps_a");
+    drop_quietly(&db, "DROP PACKAGE it_ps_b");
+    drop_quietly(&db, "DROP TABLE it_ps_t PURGE");
+    drop_quietly(&db, "DROP TABLE it_ps_u PURGE");
+}

@@ -2,6 +2,19 @@
 
 A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React + CodeMirror UI.
 
+## Status: PL/Scope (exact package usage)
+
+| Piece | State |
+|---|---|
+| Packages compiled with `PLSCOPE_SETTINGS='IDENTIFIERS:ALL[, STATEMENTS:ALL]'` are analysed from `ALL_IDENTIFIERS` / `ALL_STATEMENTS`: exact callee (resolved through the identifier signature), every table in a `FROM a, b` list, synonyms resolved, `EXECUTE IMMEDIATE` sites, all with line numbers | 8 new core tests with a fake database (fusion rules, fallback, loader) |
+| Other packages keep the text scan; each package, member and link says which one it came from (`plscope / exact` vs `scan / heuristic`) | UI verified in demo mode |
+| Packages tab shows "exact · PL/Scope" or "text scan" per package, how many of each, and the exact `ALTER SESSION … COMPILE BODY` command to upgrade a scan-only package | UI verified |
+| Anything PL/Scope did not report but the scan saw is kept as "scan also saw" for review, not trusted | tested |
+| PL/Scope usages that fall outside every member's lines are counted and reported, never dropped silently | tested |
+| Everything above **against a real Oracle** | **not run**. The three PL/Scope queries are written from the documented view columns and were never executed against a database: if one fails, the app falls back to the text scan and shows the error. Ignored test `plscope_gives_exact_calls_and_tables_for_packages_compiled_with_it` checks them on a live schema |
+
+**How the pieces are combined:** PL/Scope decides *what* is called or touched; a table's read/write is taken from the statement type PL/Scope recorded, except that an `INSERT … SELECT` source table stays a read (PL/Scope reports the whole statement as `INSERT`). Usages are attributed to members by line range. Calls to standalone procedures/functions are not resolved here (they come from dictionary dependencies).
+
 ## Status: knowledge base & markdown export (Phase 4)
 
 | Piece | State |

@@ -72,13 +72,15 @@ export function PackagesPage({ api, conn, owner, select, onOpenSource, onGraph, 
                 <span className={`dot ${bad ? "bad" : "ok"}`} title={bad ? "Invalid" : "Valid"} />
                 <span className="pk-name">{p.name}</span>
                 {p.wrapped && <span className="tag">wrapped</span>}
+                {p.analysis === "plscope" && <span className="tag ok" title="Analysed with PL/Scope: exact, with line numbers">exact</span>}
                 {p.unreferenced > 0 && <span className="tag warn" title="Public members nothing in this schema calls">{p.unreferenced} unref.</span>}
                 <span className="count">{p.members.length}</span>
               </button>
             );
           })}
         </div>
-        {a && <div className="pk-foot muted small">{a.packages.length} packages · {a.packages.reduce((n, p) => n + p.members.length, 0)} members</div>}
+        {a && <div className="pk-foot muted small">{a.packages.length} packages · {a.packages.reduce((n, p) => n + p.members.length, 0)} members
+          <br />{a.plscope_packages} analysed with PL/Scope (exact), {a.packages.filter((p) => p.analysis === "scan").length} by text scan{a.scope_error && <span className="warn" title={a.scope_error}> · PL/Scope unavailable</span>}</div>}
       </aside>
 
       <section className="pk-detail">
@@ -90,14 +92,23 @@ export function PackagesPage({ api, conn, owner, select, onOpenSource, onGraph, 
               <span className={`chip ${cur.spec_status === "VALID" ? "ok" : "bad"}`}>spec {cur.spec_status.toLowerCase()}</span>
               {cur.body_status && <span className={`chip ${cur.body_status === "VALID" ? "ok" : "bad"}`}>body {cur.body_status.toLowerCase()}</span>}
               {cur.wrapped && <span className="chip">wrapped: not scanned</span>}
+              {!cur.wrapped && <span className={`chip ${cur.analysis === "plscope" ? "ok" : ""}`} title={cur.analysis === "plscope" ? "Calls and tables come from PL/Scope" : "Calls and tables come from a text scan"}>{cur.analysis === "plscope" ? "exact · PL/Scope" : "text scan"}</span>}
               <span className="spacer" />
               <button onClick={() => onOpenSource(cur.name)}><Icon name="sql" size={14} /> Source</button>
               <button onClick={() => onGraph(cur.name)}><Icon name="out" size={14} /> Graph</button>
             </header>
-            <div className="warn-box small" role="note">
-              Calls and table usage come from a text scan of the package bodies: dynamic SQL, callers outside this schema (jobs, applications) and
-              <code> FROM a, b</code> lists beyond the first table are not seen. "Not referenced" means <i>no caller found here</i>, not "safe to delete".
-            </div>
+            {cur.analysis === "plscope" ? (
+              <div className="ok-box small" role="note">
+                Calls and table usage come from <b>PL/Scope</b>: exact, with line numbers. Dynamic SQL and callers outside this schema (jobs, applications) are still not seen.
+                {cur.unattributed > 0 && <> {cur.unattributed} usage(s) could not be attributed to a member.</>}
+              </div>
+            ) : (
+              <div className="warn-box small" role="note">
+                Calls and table usage come from a text scan of the package body (<b>heuristic</b>): dynamic SQL, callers outside this schema and the second and later tables of a
+                <code> FROM a, b</code> list are not seen. "Not referenced" means <i>no caller found here</i>, not "safe to delete".
+                {!cur.wrapped && <> For exact data compile it with PL/Scope: <code className="block">ALTER SESSION SET plscope_settings = 'IDENTIFIERS:ALL, STATEMENTS:ALL'; ALTER PACKAGE {cur.name.toLowerCase()} COMPILE BODY;</code></>}
+              </div>
+            )}
 
             <div className="pk-links">
               <div><span className="field-label">Reads / writes</span>
@@ -130,9 +141,9 @@ export function PackagesPage({ api, conn, owner, select, onOpenSource, onGraph, 
                       <td className="small">{m.public ? "public" : "private"}</td>
                       <td className="small">{m.reads.join(", ") || "–"}</td>
                       <td className="small">{m.writes.join(", ") || "–"}</td>
-                      <td className="small" title={m.calls.map((c) => `${c.package}.${c.member}`).join("\n")}>{m.calls.length ? m.calls.map((c) => `${c.package}.${c.member}`).join(", ") : m.internal_refs ? `${m.internal_refs} internal` : "–"}</td>
+                      <td className="small" title={m.scan_only.length ? `The text scan also saw (PL/Scope did not): ${m.scan_only.join(", ")}` : m.calls.map((c) => `${c.package}.${c.member}`).join("\n")}>{m.calls.length ? m.calls.map((c) => `${c.package}.${c.member}`).join(", ") : m.internal_refs ? `${m.internal_refs} internal` : "–"}</td>
                       <td className="small">{m.called_by.length ? m.called_by.map((c) => `${c.package}.${c.member}`).join(", ") : m.internal_refs ? `${m.internal_refs} internal` : "–"}</td>
-                      <td className={`small st-${STATUS[m.status][1]}`}>{cur.wrapped ? "not scanned" : STATUS[m.status][0]}</td>
+                      <td className={`small st-${STATUS[m.status][1]}`}>{cur.wrapped ? "not scanned" : STATUS[m.status][0]}{m.scan_only.length > 0 && <div className="muted">scan also saw: {m.scan_only.join(", ")}</div>}</td>
                     </tr>
                   ))}
                 </tbody>

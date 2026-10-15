@@ -329,3 +329,5 @@ table.map tr.bad td { background: var(--bad-soft); }
 .kb-gaps { font-size: 12px; } .kb-gaps summary { cursor: pointer; color: var(--text-2); } .kb-gaps ul { margin: 6px 0 0; padding-left: 18px; } .kb-gaps li.warning { color: var(--text); } .kb-gaps li.info { color: var(--text-2); }
 .kb-preview { margin: 0; max-height: 340px; overflow: auto; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font: 11.5px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; }
 .modal.kb { max-height: 92vh; }
+.tag.ok { background: var(--ok-soft); color: var(--ok); }
+code.block { display: block; margin-top: 4px; white-space: pre-wrap; user-select: all; }
