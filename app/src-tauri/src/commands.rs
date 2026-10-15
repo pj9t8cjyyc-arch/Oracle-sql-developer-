@@ -109,18 +109,8 @@ pub(crate) struct Connected {
 }
 
 /// Stable (FNV-1a) identity of user@host:port/service.
-fn connection_key(p: &ConnectionProfile) -> String {
-    let id = format!("{}@{}:{}/{}", p.user, p.host, p.port, p.service).to_lowercase();
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in id.bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    format!("{h:016x}")
-}
-
 fn index_file_name(p: &ConnectionProfile) -> String {
-    format!("index-{}.sqlite", connection_key(p))
+    format!("index-{}.sqlite", p.key())
 }
 
 #[derive(serde::Serialize)]
@@ -213,7 +203,7 @@ pub async fn connect(
     password: String,
 ) -> CmdResult<ConnInfo> {
     let env = profile.environment;
-    let (key, name) = (connection_key(&profile), profile.name.clone());
+    let (key, name) = (profile.key(), profile.name.clone());
     let opener: Arc<dyn Fn() -> ora_core::Result<Arc<dyn Database>> + Send + Sync> = {
         let (p, pw) = (profile.clone(), password.clone());
         Arc::new(move || Ok(Arc::new(OracleDb::connect(&p, &pw)?) as Arc<dyn Database>))
@@ -974,4 +964,106 @@ pub async fn kb_export(
         })
     })
     .await
+}
+
+// ------------------------------------------------------------ connection helpers
+
+#[derive(serde::Serialize)]
+pub struct ConnTest {
+    ok: bool,
+    error: Option<String>,
+    details: Option<ora_core::conninfo::ConnDetails>,
+    elapsed_ms: u64,
+    /// Version of the Oracle client library in use.
+    client: Option<String>,
+}
+
+/// Connects once, reads the database version and a few facts, and disconnects. Never changes anything.
+#[tauri::command]
+pub async fn test_connection(profile: ConnectionProfile, password: String) -> CmdResult<ConnTest> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = std::time::Instant::now();
+        let client = ora_core::oracle_backend::client_version();
+        Ok(match OracleDb::connect(&profile, &password) {
+            Ok(db) => {
+                let details = ora_core::conninfo::details(&db);
+                ConnTest {
+                    ok: details.is_ok(),
+                    error: details.as_ref().err().map(|e| e.to_string()),
+                    details: details.ok(),
+                    elapsed_ms: t.elapsed().as_millis() as u64,
+                    client: client.ok(),
+                }
+            }
+            Err(e) => ConnTest {
+                ok: false,
+                error: Some(e.to_string()),
+                details: None,
+                elapsed_ms: t.elapsed().as_millis() as u64,
+                client: client.ok(),
+            },
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(serde::Serialize)]
+pub struct TnsSummary {
+    names: Vec<String>,
+    host: Option<String>,
+    port: Option<String>,
+    service: Option<String>,
+    tls: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct TnsList {
+    file: String,
+    entries: Vec<TnsSummary>,
+}
+
+/// The aliases in a `tnsnames.ora` (folder or file; empty = `TNS_ADMIN` / `ORACLE_HOME`).
+#[tauri::command]
+pub fn tns_aliases(path: String) -> CmdResult<TnsList> {
+    let (file, entries) = ora_core::tns::load(&path).map_err(|e| e.to_string())?;
+    Ok(TnsList {
+        file: file.display().to_string(),
+        entries: entries
+            .into_iter()
+            .map(|e| TnsSummary {
+                names: e.names,
+                host: e.host,
+                port: e.port,
+                service: e.service,
+                tls: e.tls,
+            })
+            .collect(),
+    })
+}
+
+#[derive(serde::Serialize)]
+pub struct ClientStatus {
+    ok: bool,
+    version: Option<String>,
+    error: Option<String>,
+}
+
+/// Is Oracle Instant Client installed and loadable?
+#[tauri::command]
+pub async fn client_status() -> CmdResult<ClientStatus> {
+    tauri::async_runtime::spawn_blocking(|| match ora_core::oracle_backend::client_version() {
+        Ok(v) => ClientStatus {
+            ok: true,
+            version: Some(v),
+            error: None,
+        },
+        Err(e) => ClientStatus {
+            ok: false,
+            version: None,
+            error: Some(e),
+        },
+    })
+    .await
+    .map_err(|e| e.to_string())
 }

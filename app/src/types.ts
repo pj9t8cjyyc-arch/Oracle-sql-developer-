@@ -17,6 +17,8 @@ export type RunResult =
   | { kind: "done"; analysis: Analysis };
 export interface Page { rows: Row[]; done: boolean; truncated: boolean }
 export type Environment = "dev" | "test" | "prod";
+export type ConnKind = "easy" | "tns" | "connect_string";
+export type AuthKind = "password" | "external" | "proxy";
 export interface Profile {
   name: string;
   host: string;
@@ -24,7 +26,23 @@ export interface Profile {
   service: string;
   user: string;
   environment: Environment;
+  // how to reach the database and sign in; profiles saved before these existed load with the defaults
+  kind?: ConnKind;
+  tls?: boolean;
+  tns_alias?: string;
+  tns_admin?: string;
+  connect_string?: string;
+  wallet_dir?: string;
+  auth?: AuthKind;
+  proxy_target?: string;
+  privilege?: "none" | "sysdba" | "sysoper";
+  connect_timeout_secs?: number;
 }
+export interface ConnDetails { banner: string; major: number | null; db_name: string; container: string | null; session_user: string; server_host: string | null; plscope_settings: string | null }
+export interface ConnTest { ok: boolean; error: string | null; details: ConnDetails | null; elapsed_ms: number; client: string | null }
+export interface TnsSummary { names: string[]; host: string | null; port: string | null; service: string | null; tls: boolean }
+export interface TnsList { file: string; entries: TnsSummary[] }
+export interface ClientStatus { ok: boolean; version: string | null; error: string | null }
 
 // ---- Phase 1: insight, completion, search ----
 export interface FkRef { constraint: string; ref_owner: string; ref_table: string; ref_column: string }

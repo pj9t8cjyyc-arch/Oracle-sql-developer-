@@ -366,3 +366,9 @@ i.null { color: var(--text-3); }
 .topbar .search-pill { flex: 1 1 200px; min-width: 120px; max-width: 460px; margin-left: 8px; }
 .topbar .search-pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 1300px) { .topbar .demo { display: none; } }
+
+/* ---- connect dialog */
+.modal.connect.wide { width: min(640px, 94vw); max-height: 92vh; overflow: auto; }
+.modal.connect textarea { width: 100%; font: 12px var(--mono); resize: vertical; }
+.pre { white-space: pre-wrap; }
+details.adv { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; } details.adv summary { cursor: pointer; color: var(--text-2); }

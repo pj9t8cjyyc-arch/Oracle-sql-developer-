@@ -324,6 +324,7 @@ export default function App() {
       </footer>
       {connectOpen && (
         <ConnectDialog
+          api={api}
           profiles={profiles} error={connectError} busy={connecting} onConnect={connect}
           onSave={async (p) => { await api.saveProfile(p); setProfiles(await api.listProfiles()); }}
           onCancel={conns.length > 0 ? () => setConnectOpen(false) : undefined}

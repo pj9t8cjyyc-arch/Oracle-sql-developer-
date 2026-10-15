@@ -6,6 +6,7 @@ pub mod ai;
 pub mod catalog;
 pub mod comments;
 pub mod complete;
+pub mod conninfo;
 pub mod datadiff;
 pub mod db;
 pub mod dossier;
@@ -31,5 +32,6 @@ pub mod search;
 pub mod session;
 pub mod sqltext;
 pub mod textdiff;
+pub mod tns;
 
 pub use error::{Error, Result};
