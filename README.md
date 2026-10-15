@@ -2,6 +2,25 @@
 
 A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React + CodeMirror UI.
 
+## Status: import & export (Phase 2)
+
+| Piece | State |
+|---|---|
+| Export a table or any query to **CSV, TSV, Excel (.xlsx), JSON Lines, SQL INSERT** — streamed from the cursor, optional gzip, split into several files, atomic write (`.part` renamed when finished, removed on cancel/error) | 149 core tests |
+| **"Best option" recommendation** by row count and purpose (Excel / load into Oracle / share with a tool / archive), with a verdict per format and the reason | tested; UI verified in demo mode |
+| Import **CSV, TSV, text, .gz, .xlsx**: encoding, delimiter and header detection; per-column type inference; ambiguous dates (`03/04/2021`) and decimal marks (`1.234,56`) are flagged and you choose | tested; UI verified |
+| Column mapping against the target table (by name, else position), with a fix suggestion (e.g. `ALTER TABLE … MODIFY …`) for every problem; *Create table from file* shows the DDL first | tested |
+| *Check file* validates every row without touching the database; the load maps Oracle row errors back to **file row numbers** and writes a reject file | tested with a fake database |
+| Everything above **against a real Oracle** | **not run** — ignored integration tests exist (`oracle_it.rs`) |
+
+**Which format for large data?** CSV (add gzip) is the default for anything big: constant memory, any tool reads it, ~5× smaller compressed. Excel stops at 1,048,576 rows per sheet, so large Excel exports are split into files that each open; above ~100k rows Excel is marked "caution". SQL INSERT is for small sets you want to review or replay (above ~200k rows it is marked "avoid"). For tens of millions of rows between two Oracle databases the app points you to Data Pump (`expdp`/`impdp`), which runs inside the database and beats any client-side tool.
+
+**Measured (writer side, release build, no database):** CSV ≈ 990k rows/s, CSV.gz ≈ 1.09M rows/s, JSONL ≈ 510k, SQL INSERT ≈ 620k, XLSX ≈ 145k; import convert + batch ≈ 570k rows/s. Real throughput is bound by the network and the database; run the ignored `export_throughput`/`import_throughput` tests and `oracle_it` for your numbers.
+
+**Safety:** dates and numbers are written in fixed formats whatever the session NLS is; text cells starting with `= + - @` are neutralised for Excel (non-numeric columns only); JSON/XLSX keep numbers above 15 significant digits as text so nothing is silently rounded. Imports use explicit `TO_NUMBER/TO_DATE/TO_TIMESTAMP` formats, bind arrays, commit once at the end by default, and ask for an extra confirmation on PROD. Leading zeros stay text unless the target column is numeric.
+
+**Limits:** Oracle 12.1+ is needed to map batch errors to rows; export/import run on a second session opened with the password held in memory; Excel files are read fully into memory; `TIMESTAMP WITH TIME ZONE`, `BLOB`/`CLOB` and similar columns are not imported; parallel (multi-session) export is not implemented.
+
 ## Status: history & worksheets (local SQLite)
 
 | Piece | State |
@@ -26,7 +45,7 @@ A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React +
 2. **Linkage graph tab**: nodes = tables, views, packages, procedures, triggers, sequences; edges = foreign keys, `ALL_DEPENDENCIES`, trigger→table/sequence. Two questions answered directly: *"what breaks if I change this?"* (used-by closure) and *"what does this need?"* (uses closure), with hop limits and type filters so a big schema stays readable. The graph data is cached in the same SQLite file and traversed with recursive queries.
 3. **AI** (needs your input): where your existing AI code runs (Rust, Python sidecar, remote service) and which provider decides the shape. My suggestion: a provider trait with a local-model option; send **metadata and your own history, never row data**, by default; uses in this order: (a) NL→SQL grounded in the schema *and the queries you have already run*, (b) explain a package/trigger, (c) worksheet titles and summaries, (d) optimisation hints next to the explain plan. Anything the AI writes passes the same safe-mode guard, and only read-only statements run without confirmation.
 4. **DuckDB**: keep for analytics, not as a second copy of history. It can `ATTACH` the SQLite file directly, so "how did this query's runtime change over a year" needs no duplicate. DuckDB's main job stays the AWR/ASH-style monitor and fast file profiling for import/export.
-5. Still pending from before: fast parallel export/import with type mapping, sandbox simulation, explain-plan viewer, and running the ignored integration tests against a real Oracle.
+5. Still pending from before: parallel export, sandbox simulation, explain-plan viewer, and running the ignored integration tests against a real Oracle.
 
 ### Try it
 
@@ -60,5 +79,4 @@ Prints first-page latency and rows/second for a 100k-row stream, and checks the 
 - The search index is one SQLite file per `user@host:port/service` in the app data directory.
 
 ## Roadmap
-1. Phase 0 — connect/browse/run/stream. 2. **Phase 1 — this**: insight, autocomplete, search, comments.
-3. Fast export/import + type mapping. 4. Sandbox simulation. 5. Explain plan + optimizer. 6. Own AWR/ASH-style monitor.
+1. Phase 0 — connect/browse/run/stream. 2. Phase 1: insight, autocomplete, search, comments. 3. **Fast export/import + type mapping — done (Phase 2)**. 4. Sandbox simulation. 5. Explain plan + optimizer. 6. Own AWR/ASH-style monitor.

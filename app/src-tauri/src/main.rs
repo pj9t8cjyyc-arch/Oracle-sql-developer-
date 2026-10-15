@@ -1,9 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod jobs;
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             use tauri::Manager;
             let dir = app.path().app_data_dir()?;
@@ -11,13 +13,14 @@ fn main() {
             // History and worksheets live in one local SQLite file. If it cannot be
             // opened (read-only disk, newer schema), fall back to memory and say so
             // in the UI instead of failing to start.
-            let (store, persistent) = match ora_core::history::HistoryStore::open(&dir.join("workspace.sqlite")) {
-                Ok(s) => (s, true),
-                Err(e) => {
-                    eprintln!("history: {e}; using an in-memory store");
-                    (ora_core::history::HistoryStore::in_memory()?, false)
-                }
-            };
+            let (store, persistent) =
+                match ora_core::history::HistoryStore::open(&dir.join("workspace.sqlite")) {
+                    Ok(s) => (s, true),
+                    Err(e) => {
+                        eprintln!("history: {e}; using an in-memory store");
+                        (ora_core::history::HistoryStore::in_memory()?, false)
+                    }
+                };
             app.manage(commands::AppState::new(store, persistent));
             Ok(())
         })
@@ -41,6 +44,15 @@ fn main() {
             commands::sequence_info,
             commands::object_dependencies,
             commands::statements,
+            jobs::job_cancel,
+            jobs::export_recommend,
+            jobs::export_start,
+            jobs::import_profile,
+            jobs::import_plan,
+            jobs::import_ddl,
+            jobs::import_create_table,
+            jobs::import_validate_start,
+            jobs::import_start,
             commands::history_status,
             commands::history_set_enabled,
             commands::history_search,

@@ -6,6 +6,7 @@ import { Icon } from "../ui-icons";
 import type { Analysis, Column, ObjectKind, Row, StatementRange } from "../types";
 import { ColumnFocus } from "./ColumnFocus";
 import { ConfirmDialog } from "./Dialogs";
+import { ExportDialog } from "./ExportDialog";
 import type { ConnState } from "./Explorer";
 import { ResultGrid } from "./ResultGrid";
 import { SqlEditor, type EditorHandle, type RunRequest } from "./SqlEditor";
@@ -56,6 +57,8 @@ export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchema
   const [pending, setPending] = useState<{ sql: string; analysis: Analysis }>();
   const [qb, setQb] = useState<QueryBadges>({ badges: {}, colTable: {} });
   const [focus, setFocus] = useState<{ owner: string; table: string; column: string }>();
+  const [lastSelect, setLastSelect] = useState("");
+  const [exporting, setExporting] = useState(false);
   const editor = useRef<EditorHandle>();
   const loadingMore = useRef(false);
   const handleRef = useRef<number | null>(null);
@@ -85,6 +88,7 @@ export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchema
         handleRef.current = r.done ? null : r.handle;
         setResult({ columns: r.columns, rows: r.rows, handle: r.done ? null : r.handle, done: r.done, truncated: false });
         setQb({ badges: {}, colTable: {} });
+        setLastSelect(r.analysis.kind === "select" ? text : "");
         okRun = true;
         setStatus(`${r.rows.length.toLocaleString()} rows${r.done ? "" : " (more available)"} in ${secs}s`);
         if (r.analysis.kind === "select") {
@@ -190,11 +194,13 @@ export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchema
           <footer className="ws-status">
             <span>{status}</span>
             {result && !result.done && <button className="ghost" onClick={loadMore}>Load more</button>}
+            {result && lastSelect && <button className="ghost" onClick={() => setExporting(true)} title="Exports every row of this query, not just the rows shown">Export all rows…</button>}
             {result?.truncated && <span className="warn">Result capped at the row limit</span>}
           </footer>
         </div>
         {focus && <FocusDrawer api={api} conn={conn} cache={getCache(connId)} target={focus} onOpen={onOpen} onClose={() => setFocus(undefined)} onError={onError} />}
       </div>
+      {exporting && lastSelect && <ExportDialog api={api} conn={connId} env={env} source={{ type: "query", sql: lastSelect }} label="query result" defaultName="query_result" onClose={() => setExporting(false)} onError={onError} />}
       {pending && <ConfirmDialog analysis={pending.analysis} onCancel={() => { setPending(undefined); setStatus("Cancelled"); }} onRun={() => run(pending.sql, true)} />}
     </div>
   );

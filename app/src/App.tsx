@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiPromise, isDemo, type Api } from "./api";
 import { InsightCache } from "./badges";
 import { ConnectDialog } from "./components/Dialogs";
+import { ImportWizard } from "./components/ImportWizard";
 import { Explorer, type ConnState } from "./components/Explorer";
 import { ObjectPage, type ObjTarget } from "./components/ObjectPage";
 import { SearchPalette, type ConnHit } from "./components/SearchPalette";
@@ -22,6 +23,7 @@ const sig = (sql: string, owner: string, key: string) => `${key}|${owner}|${sql}
 
 export default function App() {
   const [api, setApi] = useState<Api>();
+  const [importing, setImporting] = useState(false);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [conns, setConns] = useState<ConnState[]>([]);
   const [tabs, setTabs] = useState<Tab[]>([]);
@@ -198,6 +200,7 @@ export default function App() {
         <button className="search-pill" onClick={() => setSearchOpen(true)} disabled={conns.length === 0}>
           <Icon name="search" size={14} /> <span>Search tables, columns, source…</span> <kbd>Ctrl K</kbd>
         </button>
+        <button disabled={conns.length === 0} onClick={() => setImporting(true)} title="Load a CSV or Excel file into a table"><Icon name="upload" size={14} /> Import</button>
         <button onClick={openHistory} title="Everything you have run, searchable"><Icon name="history" size={14} /> History</button>
         <span className="spacer" />
         {isDemo && <span className="demo">DEMO · no real database</span>}
@@ -276,6 +279,7 @@ export default function App() {
           onCancel={conns.length > 0 ? () => setConnectOpen(false) : undefined}
         />
       )}
+      {importing && (() => { const c = connOf(activeConnId ?? "") ?? conns[0]; return c ? <ImportWizard api={api} conn={c.id} env={c.profile.environment} schemas={c.schemas} initial={{ owner: c.schemas.find((s) => s.toLowerCase() === c.user.toLowerCase()) ?? c.schemas[0], table: "" }} onClose={() => setImporting(false)} onError={onError} /> : null; })()}
       {searchOpen && conns.length > 0 && <SearchPalette api={api} conns={conns} activeConnId={activeConnId} onPick={pick} onPickHistory={pickHistory} onClose={() => setSearchOpen(false)} />}
     </div>
   );

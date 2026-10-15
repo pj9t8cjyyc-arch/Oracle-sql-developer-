@@ -4,6 +4,7 @@
 // none of this runs in the real app.
 import type { Api } from "./api";
 import { mockHistory, record } from "./mock-history";
+import { transferApi } from "./mock-transfer";
 import type {
   Analysis, Column, ColumnInsight, Completions, ConnInfo, Hit, ObjectDeps, ObjectEntry, ObjectKind, Profile, Row, RunResult, SeqUse,
   SequenceInfo, Suggestion, TableInsight, TableRef, TriggerInfo,
@@ -346,7 +347,34 @@ function corpus(d: Db): Hit[] {
   return out;
 }
 
+const typeParts = (display: string): Pick<import("./types").TargetCol, "data_type" | "char_length" | "data_length" | "char_used" | "precision" | "scale"> => {
+  const m = /^(\w+)(?:\((\d+)(?:,(\d+))?(?: CHAR)?\))?/.exec(display) ?? [];
+  const base = m[1] ?? display;
+  return { data_type: base, char_length: base === "VARCHAR2" ? Number(m[2] ?? 0) : 0, data_length: base === "NUMBER" ? 22 : Number(m[2] ?? 7), char_used: base === "VARCHAR2" ? "C" : "", precision: base === "NUMBER" && m[2] ? Number(m[2]) : null, scale: base === "NUMBER" && m[2] ? Number(m[3] ?? 0) : null };
+};
+
+const transfer = transferApi({
+  tableRows(conn, source) {
+    const d = db(conn);
+    const sql = source.type === "query" ? source.sql : "";
+    const name = source.type === "table" ? source.table : Object.keys(d.data).find((k) => new RegExp(`\\b${k}\\b`, "i").test(sql));
+    const t = name ? d.data[name.toUpperCase()] : undefined;
+    if (!t) throw "ORA-00942: table or view does not exist";
+    const owner = source.type === "table" ? source.owner : Object.keys(d.objects)[0];
+    const ins = d.insights[`${owner}.${name!.toUpperCase()}`];
+    const n = Math.min(t.total, 5000);
+    return { columns: t.columns.map((c) => c.name), types: t.columns.map((c) => ins?.columns.find((x) => x.name === c.name)?.data_type ?? "VARCHAR2(30)"), rows: Array.from({ length: n }, (_, i) => t.row(i)) };
+  },
+  targets(conn, owner, table) {
+    const d = db(conn);
+    const ins = d.insights[`${owner}.${table}`];
+    if (!ins) throw `table ${owner}.${table} was not found or is not visible to this user`;
+    return ins.columns.map((c) => ({ name: c.name, display: c.data_type, nullable: c.nullable, insertable: true, note: null, ...typeParts(c.data_type) }));
+  },
+});
+
 export const mockApi: Api = {
+  ...transfer,
   historyStatus: () => mockHistory.status(),
   historySetEnabled: (e) => mockHistory.setEnabled(e),
   historySearch: (q) => mockHistory.search(q),

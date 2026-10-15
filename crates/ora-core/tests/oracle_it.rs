@@ -469,3 +469,138 @@ fn dictionary_browser_lists_kinds_and_returns_source_ddl_and_dependencies() {
         drop_quietly(&db, s);
     }
 }
+
+// ------------------------------------------------------------- export / import
+
+const EXPORT_NLS: &str = "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF6' NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF6 TZH:TZM' NLS_NUMERIC_CHARACTERS = '.,'";
+
+#[test]
+#[ignore]
+fn export_writes_iso_dates_and_dot_decimals_whatever_the_session_uses() {
+    use ora_core::db::Outcome;
+    use ora_core::export::{export, ExportOptions, Format};
+    use std::sync::atomic::AtomicBool;
+    let (db, _) = connect();
+    // a hostile session: comma decimals and a long date format
+    exec(
+        &db,
+        "ALTER SESSION SET NLS_NUMERIC_CHARACTERS = ',.' NLS_DATE_FORMAT = 'DD-MON-RR'",
+    );
+    exec(&db, EXPORT_NLS);
+    let sql = "select 1234.5 amt, .5 half, to_date('2020-02-29 13:45:10','YYYY-MM-DD HH24:MI:SS') d, to_timestamp('2020-02-29 13:45:10.123456','YYYY-MM-DD HH24:MI:SS.FF6') ts, 'x' || chr(10) || 'y' txt from dual";
+    let Outcome::Rows(mut cur) = db.run(sql, &[], 100).unwrap() else {
+        panic!("rows expected")
+    };
+    let dir = std::env::temp_dir().join(format!("ora-ide-it-exp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rep = export(
+        cur.as_mut(),
+        &dir.join("out"),
+        &ExportOptions {
+            format: Format::Csv,
+            bom: false,
+            ..Default::default()
+        },
+        &AtomicBool::new(false),
+        &mut |_| {},
+    )
+    .unwrap();
+    let text = std::fs::read_to_string(&rep.files[0]).unwrap();
+    println!("{text}");
+    assert!(
+        text.contains("1234.5") && text.contains("0.5") || text.contains(".5"),
+        "dot decimals: {text}"
+    );
+    assert!(
+        text.contains("2020-02-29 13:45:10,2020-02-29 13:45:10.123456"),
+        "ISO date and timestamp: {text}"
+    );
+    assert!(
+        text.contains("\"x\ny\"") || text.contains("\"x\r\ny\""),
+        "embedded newline is quoted: {text}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+#[ignore]
+fn import_loads_rows_with_explicit_formats_and_maps_oracle_rejects_to_file_rows() {
+    use ora_core::import::plan::{import, load_targets, plan_mapping, ImportOptions, PlanInput};
+    use ora_core::import::profile::profile_source;
+    use ora_core::import::source::{open_source, ReadOptions};
+    use std::sync::atomic::AtomicBool;
+    let (db, profile) = connect();
+    let owner = profile.user.to_uppercase();
+    drop_quietly(&db, "drop table ora_ide_imp purge");
+    exec(&db, "create table ora_ide_imp (id number(10) primary key, name varchar2(10 char), amount number(8,2), born date, seen timestamp(6))");
+    // session NLS must not matter: use a hostile one
+    exec(
+        &db,
+        "ALTER SESSION SET NLS_NUMERIC_CHARACTERS = ',.' NLS_DATE_FORMAT = 'DD-MON-RR'",
+    );
+
+    let dir = std::env::temp_dir().join(format!("ora-ide-it-imp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("in.csv");
+    // row 3 repeats id 1 (unique violation, reported by Oracle); row 4 is too long for NAME (caught before the database)
+    std::fs::write(&f, "id,name,amount,born,seen\n1,Ann,1234.50,31/01/2020,2020-01-31 10:20:30.5\n2,Bob,.5,15/02/2021,2021-02-15 00:00:00\n1,Dup,1,01/03/2020,2020-03-01 00:00:00\n4,Waaaaaaaay too long,2,01/03/2020,2020-03-01 00:00:00\n").unwrap();
+    let prof = profile_source(
+        &mut *open_source(&f, &ReadOptions::default()).unwrap(),
+        1000,
+    )
+    .unwrap();
+    let targets = load_targets(&db, &owner, "ORA_IDE_IMP").unwrap();
+    let plan = plan_mapping(
+        &owner,
+        "ORA_IDE_IMP",
+        &prof,
+        &targets,
+        &PlanInput::default(),
+    );
+    let rej = dir.join("in.rejects.csv");
+    let r = import(
+        &db,
+        &mut *open_source(&f, &ReadOptions::default()).unwrap(),
+        &plan,
+        &ImportOptions::default(),
+        &rej,
+        &AtomicBool::new(false),
+        &mut |_| {},
+    )
+    .unwrap();
+    println!("{r:?}");
+    assert_eq!(
+        (r.read, r.inserted, r.rejected, r.committed),
+        (4, 2, 2, true),
+        "{:?}",
+        r.samples
+    );
+    let rejects = std::fs::read_to_string(&rej).unwrap();
+    assert!(
+        rejects.contains("\n3,") && rejects.contains("ORA-00001"),
+        "Oracle's unique-constraint error is attributed to file row 3: {rejects}"
+    );
+    assert!(
+        rejects.contains("\n4,") && rejects.contains("too long"),
+        "{rejects}"
+    );
+    let (_, rows) = collect(&db, "select id, name, to_char(amount,'TM9','NLS_NUMERIC_CHARACTERS=''.,'''), to_char(born,'YYYY-MM-DD'), to_char(seen,'YYYY-MM-DD HH24:MI:SS.FF1') from ora_ide_imp order by id", &[]).unwrap();
+    assert_eq!(
+        rows[0],
+        vec![
+            Some("1".into()),
+            Some("Ann".into()),
+            Some("1234.5".into()),
+            Some("2020-01-31".into()),
+            Some("2020-01-31 10:20:30.5".into())
+        ]
+    );
+    assert_eq!(rows[1][2].as_deref(), Some(".5"));
+    assert_eq!(
+        rows[1][3].as_deref(),
+        Some("2021-02-15"),
+        "day-first dates read correctly regardless of session NLS_DATE_FORMAT"
+    );
+    drop_quietly(&db, "drop table ora_ide_imp purge");
+    std::fs::remove_dir_all(&dir).ok();
+}

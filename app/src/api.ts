@@ -1,4 +1,4 @@
-import type { Completions, ConnInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
+import type { Completions, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
 import { mockApi } from "./mock";
 
 /** Every call after `connect` is scoped to one connection id, so several databases can be open at once. */
@@ -47,6 +47,19 @@ export interface Api {
   wsList(filter: WorksheetFilter): Promise<WorksheetRec[]>;
   wsGet(uuid: string): Promise<WorksheetRec | null>;
   wsSteps(uuid: string): Promise<Step[]>;
+  // export / import (long work runs as a job and reports through onJob)
+  pickSavePath(defaultName: string): Promise<string | null>;
+  pickOpenPath(extensions: string[]): Promise<string | null>;
+  onJob(cb: (e: JobEvent) => void): Promise<() => void>;
+  jobCancel(id: string): Promise<void>;
+  exportRecommend(conn: string, source: ExportSource, purpose: Purpose): Promise<RecommendationInfo>;
+  exportStart(conn: string, request: ExportRequest): Promise<string>;
+  importProfile(path: string, read: ReadOptions): Promise<{ id: string; profile: FileProfile }>;
+  importPlan(conn: string, owner: string, table: string, profileId: string, input: PlanInput): Promise<MappingPlan>;
+  importDdl(profileId: string, owner: string, table: string): Promise<string>;
+  importCreateTable(conn: string, ddl: string): Promise<void>;
+  importValidateStart(path: string, read: ReadOptions, plan: MappingPlan, trim: boolean): Promise<string>;
+  importStart(conn: string, path: string, read: ReadOptions, plan: MappingPlan, options: ImportOptions): Promise<string>;
 }
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -95,6 +108,30 @@ async function tauriApi(): Promise<Api> {
     wsList: (filter) => invoke("ws_list", { filter }),
     wsGet: (uuid) => invoke("ws_get", { uuid }),
     wsSteps: (uuid) => invoke("ws_steps", { uuid }),
+    async pickSavePath(defaultName) {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      return save({ defaultPath: defaultName });
+    },
+    async pickOpenPath(extensions) {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const r = await open({ multiple: false, directory: false, filters: [{ name: "Data files", extensions }] });
+      return typeof r === "string" ? r : null;
+    },
+    async onJob(cb) {
+      const { listen } = await import("@tauri-apps/api/event");
+      const a = await listen("job-progress", (e) => cb({ type: "progress", data: e.payload as never }));
+      const b = await listen("job-done", (e) => cb({ type: "done", data: e.payload as never }));
+      return () => { a(); b(); };
+    },
+    jobCancel: (id) => invoke("job_cancel", { id }),
+    exportRecommend: (conn, source, purpose) => invoke("export_recommend", { conn, source, purpose }),
+    exportStart: (conn, request) => invoke("export_start", { conn, request }),
+    importProfile: (path, read) => invoke("import_profile", { path, read }),
+    importPlan: (conn, owner, table, profileId, input) => invoke("import_plan", { conn, owner, table, profileId, input }),
+    importDdl: (profileId, owner, table) => invoke("import_ddl", { profileId, owner, table }),
+    importCreateTable: (conn, ddl) => invoke("import_create_table", { conn, ddl }),
+    importValidateStart: (path, read, plan, trim) => invoke("import_validate_start", { path, read, plan, trim }),
+    importStart: (conn, path, read, plan, options) => invoke("import_start", { conn, path, read, plan, options }),
   };
 }
 
