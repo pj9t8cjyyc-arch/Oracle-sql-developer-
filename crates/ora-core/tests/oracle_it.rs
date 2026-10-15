@@ -21,14 +21,14 @@ fn env(k: &str, default: &str) -> String {
 }
 
 fn connect() -> (OracleDb, ConnectionProfile) {
-    let profile = ConnectionProfile {
-        name: "it".into(),
-        host: env("ORA_HOST", "localhost"),
-        port: env("ORA_PORT", "1521").parse().unwrap(),
-        service: env("ORA_SERVICE", "FREEPDB1"),
-        user: env("ORA_USER", "system"),
-        environment: Environment::Dev,
-    };
+    let mut profile = ConnectionProfile::easy(
+        "it",
+        &env("ORA_HOST", "localhost"),
+        env("ORA_PORT", "1521").parse().unwrap(),
+        &env("ORA_SERVICE", "FREEPDB1"),
+        &env("ORA_USER", "system"),
+    );
+    profile.environment = Environment::Dev;
     let db = OracleDb::connect(&profile, &env("ORA_PASSWORD", "")).expect("connect");
     (db, profile)
 }
@@ -930,4 +930,35 @@ fn data_compare_streams_two_tables_by_key_and_schema_compare_sees_a_new_table() 
     for t in ["IT_CMP_A", "IT_CMP_B", "IT_CMP_NEW"] {
         drop_quietly(&db, &format!("DROP TABLE {t} PURGE"));
     }
+}
+
+/// Other ways to connect. Set what applies, for example:
+///   ORA_TNS_ADMIN=/path/to/network/admin ORA_TNS_ALIAS=PROD ORA_USER=… ORA_PASSWORD=…
+///   ORA_CONNECT_STRING='host:1521/svc?retry_count=3' …
+///   ORA_EXTERNAL=1 ORA_TNS_ALIAS=…   (wallet / OS login, no user or password)
+#[test]
+#[ignore]
+fn other_connection_methods_reach_the_database_and_report_what_they_reached() {
+    use ora_core::profile::{AuthKind, ConnKind};
+    let mut p = ConnectionProfile::easy("it", "", 1521, "", &env("ORA_USER", ""));
+    if let Ok(cs) = std::env::var("ORA_CONNECT_STRING") {
+        p.kind = ConnKind::ConnectString;
+        p.connect_string = cs;
+    } else {
+        p.kind = ConnKind::Tns;
+        p.tns_alias =
+            std::env::var("ORA_TNS_ALIAS").expect("set ORA_TNS_ALIAS or ORA_CONNECT_STRING");
+        p.tns_admin = env("ORA_TNS_ADMIN", "");
+    }
+    if std::env::var("ORA_EXTERNAL").is_ok() {
+        p.auth = AuthKind::External;
+        p.user = String::new();
+    }
+    let db = OracleDb::connect(&p, &env("ORA_PASSWORD", "")).unwrap_or_else(|e| panic!("{e}"));
+    let d = ora_core::conninfo::details(&db).unwrap();
+    println!(
+        "{d:#?}\nOracle client {:?}",
+        ora_core::oracle_backend::client_version()
+    );
+    assert!(d.major.is_some() && !d.session_user.is_empty());
 }

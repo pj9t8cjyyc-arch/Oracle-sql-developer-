@@ -12,7 +12,7 @@ use std::thread;
 use oracle::{Connection, Connector};
 
 use crate::db::{BatchOutcome, Column, Cursor, Database, Outcome, Row};
-use crate::profile::ConnectionProfile;
+use crate::profile::{with_hint, AuthKind, ConnectionProfile, Privilege as ProfilePrivilege};
 use crate::{Error, Result};
 
 fn err(e: oracle::Error) -> Error {
@@ -24,15 +24,69 @@ pub struct OracleDb {
 }
 
 impl OracleDb {
+    /// Connects as the profile says (host/service, TNS alias or connect string; password, wallet / OS
+    /// or proxy login; optional SYSDBA/SYSOPER) and gives up after `connect_timeout_secs`.
     pub fn connect(profile: &ConnectionProfile, password: &str) -> Result<Self> {
         profile.validate()?;
-        let conn = Connector::new(&profile.user, password, profile.connect_string())
-            .connect()
-            .map_err(err)?;
-        Ok(Self {
-            conn: Arc::new(conn),
-        })
+        let cs = profile.resolved_connect_string()?;
+        let admin = profile.tns_admin.trim();
+        if !admin.is_empty() {
+            // The Oracle client reads sqlnet.ora and wallets from TNS_ADMIN. It takes effect for
+            // connections made after this; a different folder later in the same run needs a restart.
+            let p = std::path::Path::new(admin);
+            let dir = if p.is_file() {
+                p.parent().unwrap_or(p)
+            } else {
+                p
+            };
+            std::env::set_var("TNS_ADMIN", dir);
+        }
+        let (user, pass) = (profile.login_user(), password.to_string());
+        let external = profile.auth == AuthKind::External;
+        let privilege = profile.privilege;
+        let timeout = std::time::Duration::from_secs(profile.connect_timeout_secs);
+        let (tx, rx) = channel();
+        std::thread::Builder::new()
+            .name("ora-connect".into())
+            .spawn(move || {
+                let mut c = Connector::new(&user, &pass, cs);
+                if external {
+                    c.external_auth(true);
+                }
+                match privilege {
+                    ProfilePrivilege::Sysdba => {
+                        c.privilege(oracle::Privilege::Sysdba);
+                    }
+                    ProfilePrivilege::Sysoper => {
+                        c.privilege(oracle::Privilege::Sysoper);
+                    }
+                    ProfilePrivilege::None => {}
+                }
+                let r = c.connect().inspect(|conn| {
+                    // Lets a DBA recognise these sessions in V$SESSION.
+                    let _ = conn.set_module("Ora IDE");
+                });
+                let _ = tx.send(r.map_err(|e| e.to_string()));
+            })
+            .map_err(|e| Error::Database(format!("cannot start the connection: {e}")))?;
+        match rx.recv_timeout(timeout) {
+            Ok(Ok(conn)) => Ok(Self {
+                conn: Arc::new(conn),
+            }),
+            Ok(Err(e)) => Err(Error::Database(with_hint(&e))),
+            Err(_) => Err(Error::Database(with_hint(&format!(
+                "the connection attempt timed out after {} seconds (ORA-12170)",
+                profile.connect_timeout_secs
+            )))),
+        }
     }
+}
+
+/// Version of the Oracle client library the app loaded, or the reason it could not be loaded.
+pub fn client_version() -> std::result::Result<String, String> {
+    oracle::Version::client()
+        .map(|v| v.to_string())
+        .map_err(|e| with_hint(&e.to_string()))
 }
 
 enum Reply {

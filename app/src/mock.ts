@@ -401,16 +401,34 @@ export const mockApi: Api = {
     { name: "HR · development", host: "dev-db.corp", port: 1521, service: "FREEPDB1", user: "hr", environment: "dev" },
     { name: "SALES · production", host: "prod-db.corp", port: 1521, service: "SALESPDB", user: "sales_ro", environment: "prod" },
   ],
+  testConnection: async (p, password) => {
+    await sleep(350);
+    const bad = p.host === "bad" || p.tns_alias === "BAD";
+    if (bad) return { ok: false, error: "ORA-12541: TNS:no listener\n→ Nothing is listening at that host and port: check the host name, the port (usually 1521, or 2484 for TLS) and that the listener is running. A firewall or VPN is a common cause.", details: null, elapsed_ms: 350, client: "23.4.0.24.05" };
+    if ((p.auth ?? "password") === "password" && !password) return { ok: false, error: "ORA-01005: null password given; logon denied\n→ No password was supplied. Enter one, or choose wallet / OS authentication.", details: null, elapsed_ms: 12, client: "23.4.0.24.05" };
+    return { ok: true, error: null, elapsed_ms: 310, client: "23.4.0.24.05", details: { banner: "Oracle Database 23ai Free Release 23.4.0.24.05 - Develop, Learn, and Run for Free", major: 23, db_name: "FREE", container: "FREEPDB1", session_user: (p.user || "EXTERNAL").toUpperCase(), server_host: "dev-db.corp", plscope_settings: "IDENTIFIERS:NONE" } };
+  },
+  tnsAliases: async (path) => {
+    await sleep(120);
+    if (!path.trim()) throw "tnsnames.ora not found (looked in: no folder is set and neither TNS_ADMIN nor ORACLE_HOME is defined). Choose the folder that contains it.";
+    return { file: `${path.replace(/\/tnsnames\.ora$/, "")}/tnsnames.ora`, entries: [
+      { names: ["PROD", "PROD_RO"], host: "db-prod.corp", port: "1521", service: "prod.corp", tls: false },
+      { names: ["DEV"], host: "dev.corp", port: "2484", service: "devpdb", tls: true },
+      { names: ["BAD"], host: "bad", port: "1521", service: "x", tls: false },
+    ] };
+  },
+  clientStatus: async () => ({ ok: true, version: "23.4.0.24.05", error: null }),
   saveProfile: async () => {},
   deleteProfile: async () => {},
   async connect(profile): Promise<ConnInfo> {
     await sleep(250);
-    const d = dbs[profile.service];
-    if (!d) throw "ORA-12514: listener does not currently know of service requested";
+    const svc = profile.kind === "tns" ? (profile.tns_alias === "PROD" ? "SALESPDB" : "FREEPDB1") : profile.kind === "connect_string" ? (/sales/i.test(profile.connect_string ?? "") ? "SALESPDB" : "FREEPDB1") : profile.service;
+    const d = dbs[svc];
+    if (!d) throw "ORA-12514: listener does not currently know of service requested\n→ The listener does not know that service name. Use the SERVICE name (not the SID) of the pluggable database, for example from `lsnrctl status` or your DBA.";
     const id = `m${nextConn++}`;
     conns.set(id, d);
-    connMeta.set(id, { key: `key-${profile.service}`, name: profile.name });
-    return { id, key: `key-${profile.service}` };
+    connMeta.set(id, { key: `key-${svc}`, name: profile.name });
+    return { id, key: `key-${svc}` };
   },
   disconnect: async (c) => void conns.delete(c),
   async runQuery(conn, sql, confirmed, pageSize, owner, worksheet) {

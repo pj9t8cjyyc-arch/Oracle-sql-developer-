@@ -28,6 +28,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_profiles,
+            commands::test_connection,
+            commands::tns_aliases,
+            commands::client_status,
             commands::package_analysis,
             commands::graph_info,
             commands::graph_search,

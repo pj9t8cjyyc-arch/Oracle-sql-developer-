@@ -1,9 +1,12 @@
-import type { DataDiffOptions, DataSide, SchemaDiff, SidePreview, TextDiffResult, TextOptions, AiConfig, AiEvent, AiStatus, AiTest, ChatRequest, Completions, DossierOptions, KbExported, KbPreview, KbSummary, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
+import type { ClientStatus, ConnTest, TnsList, DataDiffOptions, DataSide, SchemaDiff, SidePreview, TextDiffResult, TextOptions, AiConfig, AiEvent, AiStatus, AiTest, ChatRequest, Completions, DossierOptions, KbExported, KbPreview, KbSummary, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
 import { mockApi } from "./mock";
 
 /** Every call after `connect` is scoped to one connection id, so several databases can be open at once. */
 export interface Api {
   listProfiles(): Promise<Profile[]>;
+  testConnection(profile: Profile, password: string): Promise<ConnTest>;
+  tnsAliases(path: string): Promise<TnsList>;
+  clientStatus(): Promise<ClientStatus>;
   saveProfile(p: Profile): Promise<void>;
   deleteProfile(name: string): Promise<void>;
   connect(profile: Profile, password: string): Promise<ConnInfo>;
@@ -96,6 +99,9 @@ async function tauriApi(): Promise<Api> {
   const { invoke } = await import("@tauri-apps/api/core");
   return {
     listProfiles: () => invoke("list_profiles"),
+    testConnection: (profile, password) => invoke("test_connection", { profile, password }),
+    tnsAliases: (path) => invoke("tns_aliases", { path }),
+    clientStatus: () => invoke("client_status"),
     saveProfile: (profile) => invoke("save_profile", { profile }),
     deleteProfile: (name) => invoke("delete_profile", { name }),
     connect: (profile, password) => invoke("connect", { profile, password }),

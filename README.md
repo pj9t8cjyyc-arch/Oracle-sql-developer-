@@ -2,6 +2,22 @@
 
 A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React + CodeMirror UI.
 
+## Status: connections
+
+| Piece | State |
+|---|---|
+| Ways to address the database: **host + port + service** (optionally **TLS**, `tcps://`), a **`tnsnames.ora` alias** (the entry is read by the app itself, so it works even if the Oracle client would not find the file), or a pasted **connect string / full descriptor** | 7 profile tests + 4 `tnsnames.ora` parser tests |
+| Ways to sign in: **user + password**, **wallet / OS login** (no user or password), **proxy user** (`user[target]`), optional **SYSDBA / SYSOPER** (with a warning; not combinable with wallet login) | tested |
+| Optional TLS **wallet folder** (added to a descriptor that names none) and a **connect timeout** (default 20 s, so a wrong host cannot hang the app) | tested (string building); the timeout path needs a real network |
+| **Test connection**: connects once, shows the database version, container, signed-in user, PL/Scope setting and the Oracle client version, and disconnects. The result is what you need to answer "which database am I on?" | 3 core tests with a fake database; UI verified in demo mode |
+| **Plain-language next steps** for the connection errors people hit most (no listener, unknown service, unresolved alias, wrong/expired/locked password, TLS certificate, wallet, missing Instant Client, timeout); the original Oracle message is always kept | tested |
+| **Instant Client check** at the connect dialog | UI verified; the check itself needs the real client |
+| Sessions are labelled `Ora IDE` in `V$SESSION.MODULE` so a DBA can recognise them | compiles; needs a database |
+| Existing profiles keep working and keep their history: the classic profile has the same identity key as before (tested against the old formula) | tested |
+| Everything above **against a real Oracle** | **not run** (no Oracle client or database here). Ignored test `other_connection_methods_reach_the_database_and_report_what_they_reached` takes `ORA_TNS_ALIAS` / `ORA_CONNECT_STRING` / `ORA_EXTERNAL` |
+
+**Limits:** `TNS_ADMIN` is set from the profile at connect time and is read by the Oracle client when it initialises, so changing to a different config folder within the same app run needs a restart; wallets holding *credentials* (external login) are found through `sqlnet.ora` in that folder, not through the descriptor; LDAP name resolution, Kerberos tickets and OCI IAM / Azure AD tokens are not built in (OS-level Kerberos works through external login if the client is set up for it); a timed-out attempt keeps its background thread until the operating system gives up.
+
 ## Status: compare (text, data, schema)
 
 | Piece | State |
