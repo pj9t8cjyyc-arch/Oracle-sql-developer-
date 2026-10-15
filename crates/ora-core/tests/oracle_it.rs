@@ -137,3 +137,169 @@ fn bad_sql_returns_ora_error_and_leaves_connection_usable() {
     let (_, rows) = collect(&db, "select 1 from dual", &[]).unwrap();
     assert_eq!(rows.len(), 1);
 }
+
+// ---------------------------------------------------------------- Phase 1
+// These exercise the data-dictionary SQL, which unit tests can only fake.
+
+fn exec(db: &OracleDb, sql: &str) {
+    db.run(sql, &[], 100)
+        .unwrap_or_else(|e| panic!("{sql}: {e}"));
+}
+
+fn drop_quietly(db: &OracleDb, sql: &str) {
+    let _ = db.run(sql, &[], 100);
+}
+
+#[test]
+#[ignore]
+fn insight_reports_keys_indexes_triggers_and_comments() {
+    use ora_core::insight::table_insight;
+    let (db, profile) = connect();
+    drop_quietly(&db, "drop table ora_ide_emp purge");
+    drop_quietly(&db, "drop table ora_ide_dept purge");
+    exec(
+        &db,
+        "create table ora_ide_dept (id number(6) primary key, name varchar2(30))",
+    );
+    exec(&db, "create table ora_ide_emp (id number(6) primary key, email varchar2(50) unique, dept_id number(6) references ora_ide_dept(id), sal number(8,2) check (sal > 0), name varchar2(30) not null)");
+    exec(
+        &db,
+        "create index ora_ide_emp_dept_sal on ora_ide_emp (dept_id, sal)",
+    );
+    exec(&db, "create or replace trigger ora_ide_emp_sal_trg before update of sal on ora_ide_emp for each row begin :new.sal := :new.sal; end;");
+    exec(&db, "comment on column ora_ide_emp.sal is 'Monthly salary'");
+
+    let owner = profile.user.to_uppercase();
+    let i = table_insight(&db, &owner, "ORA_IDE_EMP").unwrap();
+    let col = |n: &str| i.columns.iter().find(|c| c.name == n).unwrap().clone();
+
+    assert!(col("ID").primary_key);
+    assert!(col("EMAIL").unique);
+    assert_eq!(col("DEPT_ID").foreign_keys[0].ref_table, "ORA_IDE_DEPT");
+    assert_eq!(col("DEPT_ID").foreign_keys[0].ref_column, "ID");
+    assert_eq!(col("SAL").checks, vec!["sal > 0".to_string()]);
+    assert!(
+        col("NAME").checks.is_empty(),
+        "NOT NULL must not show as a check"
+    );
+    assert!(!col("NAME").nullable);
+    assert_eq!(col("SAL").comment.as_deref(), Some("Monthly salary"));
+    let sal = col("SAL");
+    let ix = sal
+        .indexes
+        .iter()
+        .find(|x| x.name == "ORA_IDE_EMP_DEPT_SAL")
+        .expect("composite index");
+    assert_eq!((ix.position, ix.leading), (2, false));
+    assert!(col("DEPT_ID")
+        .indexes
+        .iter()
+        .any(|x| x.name == "ORA_IDE_EMP_DEPT_SAL" && x.leading));
+    let t = sal
+        .triggers
+        .iter()
+        .find(|t| t.name == "ORA_IDE_EMP_SAL_TRG")
+        .expect("UPDATE OF trigger on SAL");
+    assert_eq!(t.reason, "update_of");
+    assert!(
+        col("EMAIL").triggers.is_empty(),
+        "UPDATE OF SAL must not attach to other columns"
+    );
+    let parent = table_insight(&db, &owner, "ORA_IDE_DEPT").unwrap();
+    assert!(parent
+        .referenced_by
+        .iter()
+        .any(|c| c.table == "ORA_IDE_EMP"));
+
+    drop_quietly(&db, "drop table ora_ide_emp purge");
+    drop_quietly(&db, "drop table ora_ide_dept purge");
+}
+
+#[test]
+#[ignore]
+fn catalog_load_completion_and_search_work_end_to_end() {
+    use ora_core::complete::{complete, Kind};
+    use ora_core::meta::{load_schema, MetaCache};
+    use ora_core::search::{docs_from_meta, SearchIndex, SearchQuery};
+    let (db, profile) = connect();
+    drop_quietly(&db, "drop table ora_ide_c_emp purge");
+    drop_quietly(&db, "drop table ora_ide_c_dept purge");
+    exec(
+        &db,
+        "create table ora_ide_c_dept (id number(6) primary key, dname varchar2(30))",
+    );
+    exec(&db, "create table ora_ide_c_emp (id number(6) primary key, dept_id number(6) references ora_ide_c_dept(id), ename varchar2(30))");
+    exec(
+        &db,
+        "comment on table ora_ide_c_emp is 'Employees of the company'",
+    );
+    let owner = profile.user.to_uppercase();
+
+    let t0 = Instant::now();
+    let schema = load_schema(&db, &owner).unwrap();
+    println!(
+        "catalog load: {} tables in {:?}",
+        schema.tables.len(),
+        t0.elapsed()
+    );
+    assert!(schema.tables.contains_key("ORA_IDE_C_EMP"));
+    assert!(schema
+        .fks
+        .iter()
+        .any(|f| f.child_table == "ORA_IDE_C_EMP" && f.parent_table == "ORA_IDE_C_DEPT"));
+
+    let mut cache = MetaCache {
+        owners: vec![owner.clone()],
+        ..Default::default()
+    };
+    cache.insert(schema.clone());
+    let sql = "select * from ora_ide_c_emp e join ";
+    let c = complete(&cache, &owner, sql, sql.len());
+    assert!(
+        c.items.iter().any(|s| s.kind == Kind::Join
+            && s.insert.contains("ORA_IDE_C_DEPT")
+            && s.insert.contains("DEPT_ID")),
+        "{:?}",
+        c.items.iter().take(5).collect::<Vec<_>>()
+    );
+    let sql = "select e. from ora_ide_c_emp e";
+    let c = complete(&cache, &owner, sql, 9);
+    assert!(c.items.iter().any(|s| s.label == "ENAME"));
+
+    let mut idx = SearchIndex::in_memory().unwrap();
+    idx.replace_owner(&owner, &docs_from_meta(&schema)).unwrap();
+    let hits = idx
+        .search(&SearchQuery {
+            text: "employees company".into(),
+            limit: 5,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(hits[0].name, "ORA_IDE_C_EMP");
+
+    drop_quietly(&db, "drop table ora_ide_c_emp purge");
+    drop_quietly(&db, "drop table ora_ide_c_dept purge");
+}
+
+#[test]
+#[ignore]
+fn saving_comments_round_trips_including_quotes() {
+    use ora_core::comments::save_comment;
+    let (db, profile) = connect();
+    drop_quietly(&db, "drop table ora_ide_cm purge");
+    exec(&db, "create table ora_ide_cm (a number)");
+    let owner = profile.user.to_uppercase();
+    let text = "it's a 'test'; DROP TABLE x; --";
+    save_comment(&db, &owner, "ORA_IDE_CM", Some("A"), text).unwrap();
+    let (_, rows) = collect(&db, "select comments from all_col_comments where owner = :1 and table_name = 'ORA_IDE_CM' and column_name = 'A'", std::slice::from_ref(&owner)).unwrap();
+    assert_eq!(rows[0][0].as_deref(), Some(text));
+    save_comment(&db, &owner, "ORA_IDE_CM", None, "").unwrap();
+    let (_, rows) = collect(
+        &db,
+        "select comments from all_tab_comments where owner = :1 and table_name = 'ORA_IDE_CM'",
+        &[owner],
+    )
+    .unwrap();
+    assert!(rows[0][0].is_none(), "empty text clears the comment");
+    drop_quietly(&db, "drop table ora_ide_cm purge");
+}

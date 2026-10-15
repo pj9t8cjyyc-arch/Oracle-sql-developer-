@@ -4,19 +4,22 @@ import type { DbObject, TableColumn } from "../types";
 
 interface Props {
   api: Api;
+  owner: string;
+  onOwnerChange(owner: string): void;
   onInsert(text: string): void;
   onError(e: unknown): void;
+  onSelectTable(owner: string, table: string, column?: string): void;
 }
 
-export function SchemaTree({ api, onInsert, onError }: Props) {
+export function SchemaTree({ api, owner, onOwnerChange, onInsert, onError, onSelectTable }: Props) {
   const [schemas, setSchemas] = useState<string[]>([]);
-  const [owner, setOwner] = useState("");
   const [objects, setObjects] = useState<DbObject[]>([]);
   const [filter, setFilter] = useState("");
   const [open, setOpen] = useState<Record<string, TableColumn[] | null>>({});
 
   useEffect(() => {
-    api.listSchemas().then((s) => { setSchemas(s); if (s[0]) setOwner(s[0]); }).catch(onError);
+    api.listSchemas().then((s) => { setSchemas(s); if (s[0] && !owner) onOwnerChange(s[0]); }).catch(onError);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, onError]);
 
   useEffect(() => {
@@ -26,6 +29,7 @@ export function SchemaTree({ api, onInsert, onError }: Props) {
   }, [api, owner, onError]);
 
   const toggle = (o: DbObject) => {
+    if (o.object_type === "TABLE" || o.object_type === "VIEW") onSelectTable(owner, o.name);
     if (o.name in open) {
       const { [o.name]: _gone, ...rest } = open;
       setOpen(rest);
@@ -40,7 +44,7 @@ export function SchemaTree({ api, onInsert, onError }: Props) {
 
   return (
     <aside className="tree">
-      <select value={owner} onChange={(e) => setOwner(e.target.value)} aria-label="Schema">
+      <select value={owner} onChange={(e) => onOwnerChange(e.target.value)} aria-label="Schema">
         {schemas.map((s) => <option key={s}>{s}</option>)}
       </select>
       <input placeholder="Filter objects…" value={filter} onChange={(e) => setFilter(e.target.value)} />
@@ -54,7 +58,7 @@ export function SchemaTree({ api, onInsert, onError }: Props) {
                   {o.name in open ? "▾" : "▸"} {o.name}
                 </div>
                 {o.name in open && (open[o.name] === null ? <div className="tree-col muted">loading…</div> : open[o.name]!.map((c) => (
-                  <div key={c.name} className="tree-col" onDoubleClick={() => onInsert(c.name)} title="Double-click to insert">
+                  <div key={c.name} className="tree-col" onClick={() => onSelectTable(owner, o.name, c.name)} onDoubleClick={() => onInsert(c.name)} title="Click for details · double-click to insert">
                     {c.name} <span className="muted">{c.data_type}{c.nullable ? "" : " NOT NULL"}</span>
                   </div>
                 )))}

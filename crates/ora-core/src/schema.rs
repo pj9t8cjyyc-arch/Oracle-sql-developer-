@@ -67,7 +67,7 @@ pub fn columns(db: &dyn Database, owner: &str, table: &str) -> Result<Vec<TableC
         .collect())
 }
 
-fn display_type(
+pub(crate) fn display_type(
     t: &str,
     data_len: &str,
     char_len: &str,
