@@ -50,3 +50,34 @@ footer { display: flex; gap: 12px; align-items: center; padding: 4px 10px; borde
 .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .sqlpreview { margin: 0; padding: 8px; background: var(--panel); border-radius: 4px; max-height: 160px; overflow: auto; white-space: pre-wrap; }
 .warnings { margin: 0; padding-left: 18px; } .warnings .danger { color: var(--danger); font-weight: 600; } .warnings .warning { color: var(--warn); }
+
+/* ---- Phase 1 ---- */
+.body { position: relative; }
+.insight { width: 340px; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+.insight-head { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.insight-head button { padding: 0 6px; }
+.insight-scroll { overflow: auto; padding: 4px 10px 16px; flex: 1; }
+.insight h4 { margin: 12px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.card { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-top: 8px; }
+.card h4 { margin: 0 0 4px; font-size: 13px; text-transform: none; letter-spacing: 0; color: var(--text); }
+.card dl { margin: 6px 0; display: grid; grid-template-columns: 92px 1fr; gap: 3px 8px; font-size: 12px; }
+.card dt { color: var(--muted); } .card dd { margin: 0; word-break: break-word; }
+.collist .colrow { display: flex; justify-content: space-between; gap: 6px; padding: 2px 6px; border-radius: 3px; cursor: pointer; }
+.collist .colrow:hover { background: var(--line); } .collist .colrow.sel { background: var(--line); font-weight: 600; }
+.line { padding: 1px 0; font-size: 12px; } .link { cursor: pointer; color: var(--accent); }
+.pad { padding: 12px; }
+.comment-editor textarea { width: 100%; min-height: 54px; resize: vertical; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 6px; }
+.comment-editor .actions { margin-top: 4px; }
+.badges { display: inline-flex; gap: 3px; flex-wrap: wrap; }
+.badge { font: 700 10px/1 ui-monospace, Menlo, monospace; padding: 2px 4px; border-radius: 3px; background: var(--line); color: var(--text); cursor: help; }
+.badge.key { background: #f0b429; color: #3b2a00; } .badge.fk { background: #7e57c2; color: #fff; }
+.badge.idx { background: #1f8a70; color: #fff; } .badge.trg { background: #e07a1f; color: #fff; }
+.badge.warn { background: var(--danger); color: #fff; } .badge.note { background: var(--line); }
+.hcell { display: flex; align-items: center; gap: 4px; cursor: pointer; } .hcell:hover, .hcell.sel { background: var(--line); }
+.hname { overflow: hidden; text-overflow: ellipsis; }
+.palette { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; width: min(640px, 94vw); max-height: 70vh; display: flex; flex-direction: column; gap: 6px; padding: 12px; align-self: start; margin-top: 12vh; }
+.palette > input { font-size: 15px; padding: 8px 10px; }
+.hits { overflow: auto; } .hit { display: flex; gap: 10px; padding: 5px 8px; border-radius: 4px; cursor: pointer; } .hit.sel { background: var(--line); }
+.hk { width: 24px; text-align: center; color: var(--muted); font-size: 11px; padding-top: 2px; }
+mark { background: #ffd54f; color: #000; border-radius: 2px; }
+.cm-tooltip-autocomplete { font-size: 12px; }

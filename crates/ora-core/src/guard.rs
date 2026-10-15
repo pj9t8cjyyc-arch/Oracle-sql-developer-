@@ -4,6 +4,7 @@
 
 use serde::Serialize;
 
+use crate::lexer::{lex, Tok};
 use crate::profile::Environment;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -48,90 +49,8 @@ pub struct Analysis {
     pub read_only: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Tok {
-    Word(String), // upper-cased
-    Punct(char),
-    Other, // literals, quoted identifiers, numbers
-}
-
 fn tokenize(src: &str) -> Vec<Tok> {
-    let c: Vec<char> = src.chars().collect();
-    let n = c.len();
-    let mut i = 0;
-    let mut out = Vec::new();
-    while i < n {
-        let ch = c[i];
-        if ch.is_whitespace() {
-            i += 1;
-        } else if ch == '-' && i + 1 < n && c[i + 1] == '-' {
-            while i < n && c[i] != '\n' {
-                i += 1;
-            }
-        } else if ch == '/' && i + 1 < n && c[i + 1] == '*' {
-            i += 2;
-            while i + 1 < n && !(c[i] == '*' && c[i + 1] == '/') {
-                i += 1;
-            }
-            i = (i + 2).min(n);
-        } else if (ch == 'q' || ch == 'Q')
-            && i + 2 < n
-            && c[i + 1] == '\''
-            && !c[i + 2].is_whitespace()
-        {
-            // q'[ ... ]' alternative quoting
-            let open = c[i + 2];
-            let close = match open {
-                '[' => ']',
-                '{' => '}',
-                '(' => ')',
-                '<' => '>',
-                o => o,
-            };
-            i += 3;
-            while i + 1 < n && !(c[i] == close && c[i + 1] == '\'') {
-                i += 1;
-            }
-            i = (i + 2).min(n);
-            out.push(Tok::Other);
-        } else if ch == '\'' {
-            i += 1;
-            while i < n {
-                if c[i] == '\'' {
-                    if i + 1 < n && c[i + 1] == '\'' {
-                        i += 2;
-                        continue;
-                    }
-                    break;
-                }
-                i += 1;
-            }
-            i = (i + 1).min(n);
-            out.push(Tok::Other);
-        } else if ch == '"' {
-            i += 1;
-            while i < n && c[i] != '"' {
-                i += 1;
-            }
-            i = (i + 1).min(n);
-            out.push(Tok::Other);
-        } else if ch.is_alphabetic() || ch == '_' {
-            let s = i;
-            while i < n && (c[i].is_alphanumeric() || matches!(c[i], '_' | '$' | '#')) {
-                i += 1;
-            }
-            out.push(Tok::Word(c[s..i].iter().collect::<String>().to_uppercase()));
-        } else if ch.is_ascii_digit() {
-            while i < n && (c[i].is_ascii_alphanumeric() || c[i] == '.') {
-                i += 1;
-            }
-            out.push(Tok::Other);
-        } else {
-            out.push(Tok::Punct(ch));
-            i += 1;
-        }
-    }
-    out
+    lex(src).into_iter().map(|t| t.tok).collect()
 }
 
 fn is_word(t: &Tok, w: &str) -> bool {

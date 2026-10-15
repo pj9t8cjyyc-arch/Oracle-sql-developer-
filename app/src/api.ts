@@ -1,4 +1,4 @@
-import type { DbObject, Page, Profile, RunResult, TableColumn } from "./types";
+import type { Completions, DbObject, Hit, Page, Profile, RefreshStats, RunResult, TableColumn, TableInsight, TableRef } from "./types";
 import { mockApi } from "./mock";
 
 export interface Api {
@@ -16,6 +16,13 @@ export interface Api {
   listSchemas(): Promise<string[]>;
   listObjects(owner: string): Promise<DbObject[]>;
   listColumns(owner: string, table: string): Promise<TableColumn[]>;
+  refreshMetadata(owner: string, includeSource: boolean): Promise<RefreshStats>;
+  tableInsight(owner: string, table: string): Promise<TableInsight>;
+  complete(sql: string, cursor: number, owner: string): Promise<Completions>;
+  references(sql: string): Promise<TableRef[]>;
+  searchObjects(text: string, owner: string | null, kinds: string[], limit: number): Promise<Hit[]>;
+  previewComment(owner: string, table: string, column: string | null, text: string): Promise<string>;
+  saveComment(owner: string, table: string, column: string | null, text: string): Promise<string>;
 }
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -37,6 +44,13 @@ async function tauriApi(): Promise<Api> {
     listSchemas: () => invoke("list_schemas"),
     listObjects: (owner) => invoke("list_objects", { owner }),
     listColumns: (owner, table) => invoke("list_columns", { owner, table }),
+    refreshMetadata: (owner, includeSource) => invoke("refresh_metadata", { owner, includeSource }),
+    tableInsight: (owner, table) => invoke("table_insight", { owner, table }),
+    complete: (sql, cursor, owner) => invoke("complete", { sql, cursor, owner }),
+    references: (sql) => invoke("references", { sql }),
+    searchObjects: (text, owner, kinds, limit) => invoke("search_objects", { text, owner, kinds, limit }),
+    previewComment: (owner, table, column, text) => invoke("preview_comment", { owner, table, column, text }),
+    saveComment: (owner, table, column, text) => invoke("save_comment", { owner, table, column, text }),
   };
 }
 

@@ -20,6 +20,13 @@ fn main() {
             commands::list_schemas,
             commands::list_objects,
             commands::list_columns,
+            commands::refresh_metadata,
+            commands::table_insight,
+            commands::complete,
+            commands::references,
+            commands::search_objects,
+            commands::preview_comment,
+            commands::save_comment,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");

@@ -64,3 +64,22 @@ export function ConnectDialog({ profiles, error, busy, onConnect, onSave }: {
     </div>
   );
 }
+
+export function SqlConfirmDialog({ title, sql, note, prod, busy, onCancel, onRun }: { title: string; sql: string; note: string; prod: boolean; busy: boolean; onCancel(): void; onRun(): void }) {
+  return (
+    <div className="modal-back">
+      <div className="modal" role="dialog" aria-label={title}>
+        <h3>{title}</h3>
+        <pre className="sqlpreview">{sql}</pre>
+        <ul className="warnings">
+          <li className="warning">{note}</li>
+          {prod && <li className="danger">You are connected to a PRODUCTION database.</li>}
+        </ul>
+        <div className="actions">
+          <button onClick={onCancel} autoFocus>Cancel</button>
+          <button className={prod ? "danger" : "primary"} disabled={busy} onClick={onRun}>{busy ? "Saving…" : "Run"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
