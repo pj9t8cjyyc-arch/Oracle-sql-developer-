@@ -48,6 +48,41 @@ pub struct Inputs {
     pub tables: Vec<String>,
     /// Package body source by package name.
     pub bodies: BTreeMap<String, String>,
+    /// Exact usage data from PL/Scope, for the package bodies compiled with it.
+    pub scope: Option<ScopeData>,
+    /// Why PL/Scope data could not be used (the text scan is used instead).
+    pub scope_error: Option<String>,
+    /// Synonym name -> table/view name in this schema, to resolve what PL/Scope reports.
+    pub synonyms: HashMap<String, String>,
+}
+
+/// What PL/Scope (`ALL_IDENTIFIERS` / `ALL_STATEMENTS`) says about package bodies.
+#[derive(Debug, Default, Clone)]
+pub struct ScopeData {
+    /// Package bodies compiled with `PLSCOPE_SETTINGS` including `IDENTIFIERS:ALL`.
+    pub packages: BTreeSet<String>,
+    pub calls: Vec<ScopeCall>,
+    pub tables: Vec<ScopeTable>,
+    /// `(package, line)` of `EXECUTE IMMEDIATE` statements.
+    pub dynamic: Vec<(String, usize)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScopeCall {
+    pub pkg: String,
+    pub line: usize,
+    pub name: String,
+    /// Package that declares the callee; `None` for a private member of the same body.
+    pub callee_pkg: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScopeTable {
+    pub pkg: String,
+    pub line: usize,
+    pub name: String,
+    /// Type of the enclosing SQL statement (`SELECT`, `INSERT`, ...) when PL/Scope recorded it.
+    pub statement: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -88,6 +123,10 @@ pub struct Member {
     pub table_lines: Vec<TableLine>,
     /// Lines using `EXECUTE IMMEDIATE` or `DBMS_SQL`: what they touch cannot be known statically.
     pub dynamic_sql_lines: Vec<usize>,
+    /// `plscope` when the calls and tables come from PL/Scope (exact), else `scan` (heuristic).
+    pub source: String,
+    /// Facts the text scan found but PL/Scope did not report (kept for review, not trusted).
+    pub scan_only: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -110,6 +149,10 @@ pub struct PackageDetail {
     pub tables: Vec<TableUse>,
     pub unreferenced: usize,
     pub unused_private: usize,
+    /// `plscope`, `scan` or `none` (wrapped / empty body).
+    pub analysis: String,
+    /// PL/Scope usages that fall outside every member's line range.
+    pub unattributed: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +161,8 @@ pub struct PackageAnalysis {
     pub packages: Vec<PackageDetail>,
     pub wrapped: usize,
     pub invalid: usize,
+    pub plscope_packages: usize,
+    pub scope_error: Option<String>,
 }
 
 fn s(r: &Row, i: usize) -> String {
@@ -192,6 +237,17 @@ pub fn load_inputs(db: &dyn Database, owner: &str) -> Result<Inputs> {
     for r in &rows {
         bodies.entry(s(r, 0)).or_default().push_str(&s(r, 1));
     }
+    let (scope, scope_error) = load_scope(db, owner);
+    let mut synonyms = HashMap::new();
+    if let Ok((_, rows)) = collect(
+        db,
+        "SELECT /*pkg:syn*/ synonym_name, table_name FROM all_synonyms WHERE owner = :1 AND table_owner = :1 AND db_link IS NULL",
+        &b,
+    ) {
+        for r in &rows {
+            synonyms.insert(s(r, 0).to_uppercase(), s(r, 1).to_uppercase());
+        }
+    }
     Ok(Inputs {
         owner: owner.to_string(),
         packages: metas.into_values().collect(),
@@ -199,7 +255,90 @@ pub fn load_inputs(db: &dyn Database, owner: &str) -> Result<Inputs> {
         args,
         tables,
         bodies,
+        scope,
+        scope_error,
+        synonyms,
     })
+}
+
+/// PL/Scope is optional: it exists only for code compiled with `PLSCOPE_SETTINGS` including
+/// `IDENTIFIERS:ALL`. Any failure here is reported and the text scan is used instead.
+fn load_scope(db: &dyn Database, owner: &str) -> (Option<ScopeData>, Option<String>) {
+    let b = [owner.to_string()];
+    let settings = match collect(
+        db,
+        "SELECT /*pkg:ps_settings*/ name, plscope_settings FROM all_plsql_object_settings WHERE owner = :1 AND type = 'PACKAGE BODY'",
+        &b,
+    ) {
+        Ok((_, rows)) => rows,
+        Err(e) => return (None, Some(format!("PL/Scope settings could not be read ({e})"))),
+    };
+    let packages: BTreeSet<String> = settings
+        .iter()
+        .filter(|r| s(r, 1).to_uppercase().contains("IDENTIFIERS:ALL"))
+        .map(|r| s(r, 0))
+        .collect();
+    if packages.is_empty() {
+        return (None, None);
+    }
+    let mut data = ScopeData {
+        packages,
+        ..Default::default()
+    };
+    let calls = collect(
+        db,
+        "SELECT /*pkg:ps_calls*/ c.object_name, c.line, c.name, d.object_name \
+         FROM all_identifiers c \
+         LEFT JOIN all_identifiers d ON d.owner = c.owner AND d.signature = c.signature \
+           AND d.object_type = 'PACKAGE' AND d.usage = 'DECLARATION' \
+         WHERE c.owner = :1 AND c.object_type = 'PACKAGE BODY' AND c.usage = 'CALL' AND c.type IN ('PROCEDURE','FUNCTION')",
+        &b,
+    );
+    let tables = collect(
+        db,
+        "SELECT /*pkg:ps_tables*/ i.object_name, i.line, i.name, st.type \
+         FROM all_identifiers i \
+         LEFT JOIN all_statements st ON st.owner = i.owner AND st.object_name = i.object_name \
+           AND st.object_type = i.object_type AND st.usage_id = i.usage_context_id \
+         WHERE i.owner = :1 AND i.object_type = 'PACKAGE BODY' AND i.usage = 'REFERENCE' AND i.type IN ('TABLE','VIEW','SYNONYM')",
+        &b,
+    );
+    let (calls, tables) = match (calls, tables) {
+        (Ok((_, c)), Ok((_, t))) => (c, t),
+        (Err(e), _) | (_, Err(e)) => {
+            return (None, Some(format!("PL/Scope data could not be read ({e})")))
+        }
+    };
+    data.calls = calls
+        .iter()
+        .map(|r| ScopeCall {
+            pkg: s(r, 0),
+            line: s(r, 1).parse().unwrap_or(0),
+            name: s(r, 2).to_uppercase(),
+            callee_pkg: opt(r, 3).map(|p| p.to_uppercase()),
+        })
+        .collect();
+    data.tables = tables
+        .iter()
+        .map(|r| ScopeTable {
+            pkg: s(r, 0),
+            line: s(r, 1).parse().unwrap_or(0),
+            name: s(r, 2).to_uppercase(),
+            statement: opt(r, 3).map(|t| t.to_uppercase()),
+        })
+        .collect();
+    // Dynamic SQL sites: optional, STATEMENTS:ALL is needed.
+    if let Ok((_, rows)) = collect(
+        db,
+        "SELECT /*pkg:ps_dyn*/ object_name, line FROM all_statements WHERE owner = :1 AND object_type = 'PACKAGE BODY' AND type = 'EXECUTE IMMEDIATE'",
+        &b,
+    ) {
+        data.dynamic = rows
+            .iter()
+            .map(|r| (s(r, 0), s(r, 1).parse().unwrap_or(0)))
+            .collect();
+    }
+    (Some(data), None)
 }
 
 pub fn analyze_schema(db: &dyn Database, owner: &str) -> Result<PackageAnalysis> {
@@ -481,6 +620,8 @@ pub fn analyze(inp: &Inputs) -> PackageAnalysis {
                 line_end: 0,
                 table_lines: vec![],
                 dynamic_sql_lines: vec![],
+                source: "scan".into(),
+                scan_only: vec![],
             });
         }
         let mut scans: Vec<Scan> = members.iter().map(|_| Scan::default()).collect();
@@ -517,6 +658,8 @@ pub fn analyze(inp: &Inputs) -> PackageAnalysis {
                         line_end: 0,
                         table_lines: vec![],
                         dynamic_sql_lines: vec![],
+                        source: "scan".into(),
+                        scan_only: vec![],
                     });
                     scans.push(Scan::default());
                 }
@@ -563,6 +706,104 @@ pub fn analyze(inp: &Inputs) -> PackageAnalysis {
                 }
             }
         }
+        let mut analysis = if wrapped || body.is_empty() {
+            "none"
+        } else {
+            "scan"
+        };
+        let mut unattributed = 0usize;
+        if let (Some(sd), false) = (&inp.scope, wrapped || body.is_empty()) {
+            if sd.packages.contains(&meta.name) {
+                analysis = "plscope";
+                let member_at = |line: usize| -> Option<usize> {
+                    members
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, m)| {
+                            m.line_start > 0 && line >= m.line_start && line <= m.line_end
+                        })
+                        .min_by_key(|(_, m)| m.line_end - m.line_start)
+                        .map(|(i, _)| i)
+                };
+                let mut fresh: Vec<Scan> = members.iter().map(|_| Scan::default()).collect();
+                for c in sd.calls.iter().filter(|c| c.pkg == meta.name) {
+                    let Some(i) = member_at(c.line) else {
+                        unattributed += 1;
+                        continue;
+                    };
+                    match &c.callee_pkg {
+                        Some(p) if *p != pname => {
+                            fresh[i].calls.insert((p.clone(), c.name.clone()));
+                        }
+                        _ => *fresh[i].internal.entry(c.name.clone()).or_default() += 1,
+                    }
+                }
+                for t in sd.tables.iter().filter(|t| t.pkg == meta.name) {
+                    let name = if tables.contains(&t.name) {
+                        t.name.clone()
+                    } else if let Some(x) = inp.synonyms.get(&t.name) {
+                        x.clone()
+                    } else {
+                        continue;
+                    };
+                    let Some(i) = member_at(t.line) else {
+                        unattributed += 1;
+                        continue;
+                    };
+                    let (sr, sw) = (
+                        scans[i].reads.contains(&name),
+                        scans[i].writes.contains(&name),
+                    );
+                    let write = match t.statement.as_deref() {
+                        // INSERT ... SELECT: PL/Scope reports the whole statement as INSERT, so a
+                        // table the scan saw only being read stays a read.
+                        Some("INSERT" | "UPDATE" | "DELETE" | "MERGE") => !(sr && !sw),
+                        Some(_) => false,
+                        None => sw && !sr,
+                    };
+                    fresh[i].table_lines.insert(TableLine {
+                        table: name.clone(),
+                        write,
+                        line: t.line,
+                    });
+                    if write {
+                        fresh[i].writes.insert(name);
+                    } else {
+                        fresh[i].reads.insert(name);
+                    }
+                }
+                for (p, l) in sd.dynamic.iter().filter(|(p, _)| *p == meta.name) {
+                    let _ = p;
+                    if let Some(i) = member_at(*l) {
+                        fresh[i].dynamic.insert(*l);
+                    }
+                }
+                for (i, f) in fresh.into_iter().enumerate() {
+                    let old = std::mem::take(&mut scans[i]);
+                    let mut only: Vec<String> = old
+                        .calls
+                        .difference(&f.calls)
+                        .map(|(p, m)| format!("calls {p}.{m}"))
+                        .collect();
+                    only.extend(
+                        old.reads
+                            .difference(&f.reads)
+                            .filter(|t| !f.writes.contains(*t))
+                            .map(|t| format!("reads {t}")),
+                    );
+                    only.extend(
+                        old.writes
+                            .difference(&f.writes)
+                            .map(|t| format!("writes {t}")),
+                    );
+                    members[i].scan_only = only;
+                    members[i].source = "plscope".into();
+                    let mut dynamic = old.dynamic;
+                    dynamic.extend(f.dynamic);
+                    scans[i] = Scan { dynamic, ..f };
+                }
+            }
+        }
         details.insert(
             pname.clone(),
             PackageDetail {
@@ -577,6 +818,8 @@ pub fn analyze(inp: &Inputs) -> PackageAnalysis {
                 tables: vec![],
                 unreferenced: 0,
                 unused_private: 0,
+                analysis: analysis.into(),
+                unattributed,
             },
         );
         raw.insert(pname, members.into_iter().zip(scans).collect());
@@ -677,6 +920,8 @@ pub fn analyze(inp: &Inputs) -> PackageAnalysis {
                 p.spec_status != "VALID" || p.body_status.as_deref().is_some_and(|b| b != "VALID")
             })
             .count(),
+        plscope_packages: packages.iter().filter(|p| p.analysis == "plscope").count(),
+        scope_error: inp.scope_error.clone(),
         packages,
     }
 }
@@ -765,6 +1010,7 @@ END util_pkg;"
             ],
             tables: vec!["EMPLOYEES".into(), "DEPARTMENTS".into(), "AUDIT_LOG".into()],
             bodies,
+            ..Default::default()
         }
     }
 
@@ -930,6 +1176,261 @@ END util_pkg;"
             }]
         );
         assert_eq!(m.dynamic_sql_lines, vec![4]);
+    }
+
+    fn scope_inputs() -> Inputs {
+        let meta = |n: &str| PkgMeta {
+            name: n.into(),
+            spec_status: "VALID".into(),
+            body_status: Some("VALID".into()),
+        };
+        let mut inp = Inputs {
+            owner: "HR".into(),
+            ..Default::default()
+        };
+        inp.packages = vec![meta("P"), meta("OTHER_PKG"), meta("Q")];
+        inp.procs = vec![ProcRow {
+            pkg: "P".into(),
+            name: "A".into(),
+            overload: None,
+        }];
+        inp.tables = vec!["T1".into(), "T2".into(), "T3".into()];
+        inp.bodies.insert(
+            "P".into(),
+            "PACKAGE BODY p IS
+  PROCEDURE a IS BEGIN
+    SELECT x INTO v FROM t1, t2;
+    other_pkg.go;
+    helper;
+  END a;
+  PROCEDURE helper IS BEGIN
+    INSERT INTO t3 SELECT * FROM t1;
+  END helper;
+END p;
+"
+            .into(),
+        );
+        inp.bodies.insert(
+            "OTHER_PKG".into(),
+            "PACKAGE BODY other_pkg IS\n  PROCEDURE go IS BEGIN NULL; END;\nEND;\n".into(),
+        );
+        inp.bodies.insert(
+            "Q".into(),
+            "PACKAGE BODY q IS\n  PROCEDURE z IS BEGIN\n    UPDATE t2 SET c = 1;\n  END;\nEND;\n"
+                .into(),
+        );
+        let mut sd = ScopeData::default();
+        sd.packages.insert("P".into());
+        let call = |line: usize, name: &str, to: Option<&str>| ScopeCall {
+            pkg: "P".into(),
+            line,
+            name: name.into(),
+            callee_pkg: to.map(String::from),
+        };
+        sd.calls = vec![call(4, "GO", Some("OTHER_PKG")), call(5, "HELPER", None)];
+        let tab = |line: usize, name: &str, st: &str| ScopeTable {
+            pkg: "P".into(),
+            line,
+            name: name.into(),
+            statement: Some(st.into()),
+        };
+        sd.tables = vec![
+            tab(3, "T1", "SELECT"),
+            tab(3, "T2", "SELECT"),
+            tab(8, "T3", "INSERT"),
+            tab(8, "T1", "INSERT"),
+        ];
+        inp.scope = Some(sd);
+        inp
+    }
+
+    #[test]
+    fn plscope_finds_what_the_scan_misses_and_marks_the_source() {
+        let a = analyze(&scope_inputs());
+        let p = pkg(&a, "P");
+        assert_eq!(p.analysis, "plscope");
+        let m = mem(p, "A");
+        assert_eq!(m.source, "plscope");
+        assert_eq!(
+            m.reads,
+            vec!["T1", "T2"],
+            "T2 is in a FROM list the scan cannot read"
+        );
+        assert_eq!(
+            m.calls,
+            vec![MemberRef {
+                package: "OTHER_PKG".into(),
+                member: "GO".into()
+            }]
+        );
+        assert_eq!(mem(p, "HELPER").internal_refs, 1);
+        assert_eq!(a.plscope_packages, 1);
+    }
+
+    #[test]
+    fn insert_select_keeps_the_source_table_a_read() {
+        let a = analyze(&scope_inputs());
+        let h = mem(pkg(&a, "P"), "HELPER");
+        assert_eq!(h.writes, vec!["T3"]);
+        assert_eq!(
+            h.reads,
+            vec!["T1"],
+            "PL/Scope calls the whole statement INSERT; the scan knows T1 is only read"
+        );
+        assert!(h.table_lines.contains(&TableLine {
+            table: "T3".into(),
+            write: true,
+            line: 8
+        }));
+    }
+
+    #[test]
+    fn packages_without_plscope_keep_the_scan_and_say_so() {
+        let a = analyze(&scope_inputs());
+        let q = pkg(&a, "Q");
+        assert_eq!(q.analysis, "scan");
+        assert_eq!(mem(q, "Z").source, "scan");
+        assert_eq!(mem(q, "Z").writes, vec!["T2"]);
+    }
+
+    #[test]
+    fn scan_only_facts_are_kept_for_review_but_not_trusted() {
+        let mut inp = scope_inputs();
+        inp.scope
+            .as_mut()
+            .unwrap()
+            .tables
+            .retain(|t| t.name != "T2");
+        let a = analyze(&inp);
+        let m = mem(pkg(&a, "P"), "A");
+        assert_eq!(m.reads, vec!["T1"]);
+        assert!(
+            m.scan_only.is_empty(),
+            "the scan never saw T2 either: {:?}",
+            m.scan_only
+        );
+        // Now PL/Scope disagrees with the scan about T1 in member A.
+        inp.scope
+            .as_mut()
+            .unwrap()
+            .tables
+            .retain(|t| !(t.name == "T1" && t.line == 3));
+        let a = analyze(&inp);
+        let m = mem(pkg(&a, "P"), "A");
+        assert!(m.reads.is_empty());
+        assert_eq!(m.scan_only, vec!["reads T1"]);
+    }
+
+    #[test]
+    fn usages_outside_every_member_are_counted_not_dropped_silently() {
+        let mut inp = scope_inputs();
+        inp.scope.as_mut().unwrap().tables.push(ScopeTable {
+            pkg: "P".into(),
+            line: 99,
+            name: "T1".into(),
+            statement: None,
+        });
+        assert_eq!(pkg(&analyze(&inp), "P").unattributed, 1);
+    }
+
+    #[test]
+    fn synonyms_reported_by_plscope_resolve_to_the_table() {
+        let mut inp = scope_inputs();
+        inp.synonyms.insert("T_SYN".into(), "T3".into());
+        inp.scope.as_mut().unwrap().tables.push(ScopeTable {
+            pkg: "P".into(),
+            line: 3,
+            name: "T_SYN".into(),
+            statement: Some("SELECT".into()),
+        });
+        assert!(mem(pkg(&analyze(&inp), "P"), "A")
+            .reads
+            .contains(&"T3".to_string()));
+    }
+
+    fn scope_db(settings: &str) -> FakeDb {
+        let t = |c: &[&str], r: Vec<Vec<Option<&str>>>| FakeTable::new(c, r);
+        FakeDb::new()
+            .with_table(
+                "pkg:objs",
+                t(
+                    &["n", "t", "s"],
+                    vec![
+                        vec![Some("P"), Some("PACKAGE"), Some("VALID")],
+                        vec![Some("P"), Some("PACKAGE BODY"), Some("VALID")],
+                    ],
+                ),
+            )
+            .with_table(
+                "pkg:procs",
+                t(&["a", "b", "c"], vec![vec![Some("P"), Some("A"), None]]),
+            )
+            .with_table("pkg:args", t(&["a", "b", "c", "d", "e", "f", "g"], vec![]))
+            .with_table("pkg:tables", t(&["n"], vec![vec![Some("T1")]]))
+            .with_table(
+                "pkg:bodies",
+                t(
+                    &["n", "t"],
+                    vec![vec![
+                        Some("P"),
+                        Some(
+                            "PACKAGE BODY p IS\n  PROCEDURE a IS BEGIN\n    NULL;\n  END;\nEND;\n",
+                        ),
+                    ]],
+                ),
+            )
+            .with_table(
+                "pkg:ps_settings",
+                t(&["n", "s"], vec![vec![Some("P"), Some(settings)]]),
+            )
+            .with_table(
+                "pkg:ps_calls",
+                t(
+                    &["o", "l", "n", "d"],
+                    vec![vec![Some("P"), Some("3"), Some("GO"), Some("OTHER_PKG")]],
+                ),
+            )
+            .with_table(
+                "pkg:ps_tables",
+                t(
+                    &["o", "l", "n", "s"],
+                    vec![vec![Some("P"), Some("3"), Some("T1"), Some("UPDATE")]],
+                ),
+            )
+            .with_table(
+                "pkg:ps_dyn",
+                t(&["o", "l"], vec![vec![Some("P"), Some("3")]]),
+            )
+    }
+
+    #[test]
+    fn the_loader_uses_plscope_only_where_it_was_compiled_in() {
+        let on = load_inputs(&scope_db("IDENTIFIERS:ALL, STATEMENTS:ALL"), "HR").unwrap();
+        let sd = on.scope.as_ref().expect("PL/Scope data");
+        assert!(
+            sd.packages.contains("P")
+                && sd.calls.len() == 1
+                && sd.tables[0].statement.as_deref() == Some("UPDATE")
+                && sd.dynamic == vec![("P".to_string(), 3)]
+        );
+        assert_eq!(sd.calls[0].callee_pkg.as_deref(), Some("OTHER_PKG"));
+        let a = analyze(&on);
+        assert_eq!(a.packages[0].members[0].dynamic_sql_lines, vec![3]);
+        assert_eq!(a.packages[0].members[0].writes, vec!["T1"]);
+        let off = load_inputs(&scope_db("IDENTIFIERS:NONE"), "HR").unwrap();
+        assert!(
+            off.scope.is_none() && off.scope_error.is_none(),
+            "not compiled with PL/Scope is normal, not an error"
+        );
+    }
+
+    #[test]
+    fn a_failing_plscope_query_falls_back_to_the_scan_and_says_why() {
+        let db = scope_db("IDENTIFIERS:ALL")
+            .with_error("pkg:ps_calls", "ORA-00942: table or view does not exist");
+        let a = analyze_schema(&db, "HR").unwrap();
+        assert!(a.scope_error.as_deref().unwrap().contains("ORA-00942"));
+        assert_eq!(a.packages[0].analysis, "scan");
     }
 
     /// 400 packages x 40 members x ~15 lines, as in a large schema. Run with

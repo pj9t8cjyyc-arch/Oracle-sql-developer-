@@ -49,17 +49,17 @@ function build(): PackageAnalysis {
       const scanned = !s.wrapped;
       const status = scanned && called_by.length === 0 && internal_refs === 0 ? (pub ? "unreferenced" : "unused_private") : "used";
       if (status === "unreferenced") unref++; if (status === "unused_private") unusedPriv++;
-      return { name: m.n, kind: m.fn ? "FUNCTION" : "PROCEDURE", signature: m.sig, overload: null, public: pub,
+      return { name: m.n, kind: m.fn ? "FUNCTION" : "PROCEDURE", signature: m.sig, overload: null, public: pub, source: name === "EMP_PKG" || name === "PAYROLL_PKG" ? "plscope" : "scan", scan_only: name === "EMP_PKG" && m.n === "OLD_BONUS" ? ["writes JOB_HISTORY"] : [],
         calls: (m.calls ?? []).filter((c) => pk(c) !== name).map((c) => ({ package: pk(c), member: mm(c) })),
         reads: m.reads ?? [], writes: m.writes ?? [], called_by, internal_refs, status };
     });
     const tabs = new Map<string, TableUse>();
     for (const m of members) { for (const t of m.reads) tabs.set(t, { table: t, read: true, write: tabs.get(t)?.write ?? false }); for (const t of m.writes) tabs.set(t, { table: t, read: tabs.get(t)?.read ?? false, write: true }); }
     const calls_packages = [...new Set(members.flatMap((m) => m.calls.map((c) => c.package)))].sort();
-    return { name, spec_status: "VALID", body_status: s.invalid ? "INVALID" : "VALID", wrapped: !!s.wrapped, body_lines: s.lines, members, calls_packages, called_by: [], tables: [...tabs.values()].sort((a, b) => a.table.localeCompare(b.table)), unreferenced: unref, unused_private: unusedPriv };
+    return { name, spec_status: "VALID", body_status: s.invalid ? "INVALID" : "VALID", wrapped: !!s.wrapped, body_lines: s.lines, members, calls_packages, called_by: [], tables: [...tabs.values()].sort((a, b) => a.table.localeCompare(b.table)), unreferenced: unref, unused_private: unusedPriv, analysis: s.wrapped ? "none" : name === "EMP_PKG" || name === "PAYROLL_PKG" ? "plscope" : "scan", unattributed: 0 };
   });
   for (const p of packages) for (const c of p.calls_packages) packages.find((x) => x.name === c)?.called_by.push(p.name);
-  return { owner: "HR", packages, wrapped: packages.filter((p) => p.wrapped).length, invalid: packages.filter((p) => p.body_status !== "VALID").length };
+  return { owner: "HR", packages, wrapped: packages.filter((p) => p.wrapped).length, invalid: packages.filter((p) => p.body_status !== "VALID").length, plscope_packages: packages.filter((p) => p.analysis === "plscope").length, scope_error: null };
 }
 
 const id = (kind: string, name: string) => `${kind}:HR.${name}`;
@@ -92,7 +92,7 @@ export function graphApi(): Pick<Api, "packageAnalysis" | "graphInfo" | "graphSe
   const summary = (owner: string): KbSummary => ({
     owner, taken_at: Date.now(), tables: 6, views: 1, packages: analysis.packages.length, members: analysis.packages.reduce((n, p) => n + p.members.length, 0), triggers: 3, indexes: 6, sequences: 3,
     nodes: g.nodes.size, edges: g.edges.length, exact_links: g.edges.length, heuristic_links: 14,
-    coverage: { packages: analysis.packages.length, packages_scanned: analysis.packages.length - 1, packages_wrapped: 1, members: 14, dynamic_sql_sites: 0, gaps: [
+    coverage: { packages: analysis.packages.length, packages_scanned: analysis.packages.length - 1, packages_wrapped: 1, packages_plscope: 2, members: 14, dynamic_sql_sites: 0, gaps: [
       { severity: "warning", area: "packages", message: "1 wrapped package(s) cannot be read, so what they call, read or write is unknown: LEGACY_PKG." },
       { severity: "warning", area: "invalid objects", message: "2 object(s) are INVALID, so their dependencies may be stale: view EMP_DETAILS_VIEW, package AUDIT_PKG." },
       { severity: "info", area: "package calls", message: "Reads, writes and calls inside packages come from a text scan (heuristic). PL/Scope is not used yet." },
@@ -109,7 +109,7 @@ export function graphApi(): Pick<Api, "packageAnalysis" | "graphInfo" | "graphSe
     const md = `<!-- file: README.md -->\n---\ntype: ora-ide-knowledge-export\nfocus: "${o.focus}"\nowner: ${n.owner}\ndirection: ${o.direction}\nhops: ${o.hops}\n---\n\n# Knowledge export: ${n.owner}.${n.name} (${n.kind.toLowerCase()})\n\n> Demo data. The real export also contains columns, keys, indexes, trigger source, DDL and the package code that touches the object.\n\n## What this export cannot tell you\n\n${summary(n.owner).coverage.gaps.map((x) => `- **${x.area}** (${x.severity}): ${x.message}`).join("\n")}\n\n<!-- file: objects/${n.kind.toLowerCase()}/${n.owner}.${n.name}.md -->\n---\nid: "${n.id}"\nkind: ${n.kind.toLowerCase()}\n---\n\n# ${n.owner}.${n.name} (${n.kind.toLowerCase()})\n\n## Links\n\n${rel.map(line).join("\n") || "- none"}\n${members}`;
     return { md, files: ["README.md", `objects/${n.kind.toLowerCase()}/${n.owner}.${n.name}.md`, "graph.json", "manifest.json"] };
   };
-  const empty = (owner: string): PackageAnalysis => ({ owner, packages: [], wrapped: 0, invalid: 0 });
+  const empty = (owner: string): PackageAnalysis => ({ owner, packages: [], wrapped: 0, invalid: 0, plscope_packages: 0, scope_error: null });
   return {
     kbBuild: async (_c, owner) => { await new Promise((r) => setTimeout(r, 400)); built = summary(owner); return built; },
     kbStatus: async () => built,

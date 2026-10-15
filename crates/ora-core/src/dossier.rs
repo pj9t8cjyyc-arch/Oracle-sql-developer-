@@ -645,7 +645,11 @@ fn package_doc(c: &Ctx, n: &GNode, p: &PackageDetail) -> String {
             ""
         }
     );
-    o.push_str("> Calls, reads and writes below come from a text scan of the body (heuristic): dynamic SQL and callers outside the schema are not seen.\n\n");
+    if p.analysis == "plscope" {
+        o.push_str("> Calls, reads and writes below come from PL/Scope (exact, with line numbers). Dynamic SQL and callers outside the schema are not seen.\n\n");
+    } else {
+        o.push_str("> Calls, reads and writes below come from a text scan of the body (heuristic): dynamic SQL and callers outside the schema are not seen. Compile the package with PL/Scope for exact data.\n\n");
+    }
     if !p.tables.is_empty() {
         o.push_str("## Tables\n\n");
         for t in &p.tables {
@@ -770,6 +774,12 @@ fn package_doc(c: &Ctx, n: &GNode, p: &PackageDetail) -> String {
                     .map(usize::to_string)
                     .collect::<Vec<_>>()
                     .join(", ")
+            ));
+        }
+        if !m.scan_only.is_empty() {
+            facts.push(format!(
+                "the text scan also saw (PL/Scope did not): {}",
+                m.scan_only.join(", ")
             ));
         }
         facts.push(match m.status.as_str() {
@@ -1005,7 +1015,7 @@ pub fn build(kb: &Knowledge, fetch: &dyn Fetch, opts: &DossierOptions) -> Result
             .unwrap_or_default()
     );
     let _ = writeln!(idx, "{} objects within {} hop(s), direction **{}**{}. Row data is not included; secrets in source are masked.\n", sub.nodes.len(), opts.hops, match opts.direction { Direction::Uses => "what it uses", Direction::UsedBy => "what uses it", Direction::Both => "both ways" }, if sub.truncated { " (**truncated**: more objects exist)" } else { "" });
-    idx.push_str("## How to read this\n\n- Every link has a source and a certainty: **dictionary / exact** (read from Oracle's data dictionary) or **scan / heuristic** (found by reading package code; can miss dynamic SQL).\n- `links:` in each file's header lists the graph edges (`rel`) so tools can follow them; `graph.json` has them all.\n\n");
+    idx.push_str("## How to read this\n\n- Every link has a source and a certainty: **dictionary / exact** (Oracle's data dictionary), **plscope / exact** (PL/Scope, with line numbers) or **scan / heuristic** (found by reading package code; can miss dynamic SQL).\n- `links:` in each file's header lists the graph edges (`rel`) so tools can follow them; `graph.json` has them all.\n\n");
     idx.push_str("## Objects\n\n");
     let rows: Vec<Vec<String>> = listed
         .iter()
