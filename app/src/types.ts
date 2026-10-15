@@ -93,3 +93,50 @@ export interface WorksheetFilter { state?: "open" | "closed" | "all"; text?: str
 export interface Step { at: number; hash: string; sql: string; kind: string; status: string; duration_ms: number; rows: number | null; error: string | null }
 export interface HistoryStatus { enabled: boolean; persistent: boolean; stats: { executions: number; distinct_queries: number; worksheets: number; first_at: number | null; size_bytes: number } }
 export interface StatementRange { start: number; end: number; kind: string; text: string }
+
+// ---- Export / import ----
+export type ExportFormat = "csv" | "tsv" | "json_lines" | "xlsx" | "sql_insert";
+export type Purpose = "spreadsheet" | "load_oracle" | "exchange" | "archive";
+export interface Alternative { format: ExportFormat; verdict: "good" | "caution" | "avoid"; note: string }
+export interface Recommendation { format: ExportFormat; gzip: boolean; split_rows: number | null; reasons: string[]; alternatives: Alternative[]; tip: string | null }
+export interface RecommendationInfo { est_rows: number | null; from_statistics: boolean; recommendation: Recommendation }
+export type ExportSource = { type: "query"; sql: string } | { type: "table"; owner: string; table: string; where_clause: string | null };
+export interface ExportOptions {
+  format: ExportFormat; header: boolean; delimiter: string; null_text: string; bom: boolean; gzip: boolean;
+  sanitize_formulas: boolean; split_rows: number | null; insert_table: string | null; rows_per_commit: number;
+  sqlplus_directives: boolean; xlsx_sheet_rows: number; batch_size: number;
+}
+export interface ExportRequest { source: ExportSource; path: string; options: ExportOptions; row_limit: number | null; overwrite: boolean }
+export interface ExportReport { rows: number; bytes: number; files: string[]; elapsed_ms: number; rows_per_sec: number; warnings: string[]; cancelled: boolean }
+export interface JobProgress { id: string; kind: "export" | "import" | "validate"; rows: number; bytes: number; rejected: number; elapsed_ms: number }
+export interface JobDone { id: string; kind: "export" | "import" | "validate"; ok: boolean; cancelled: boolean; error: string | null; report: unknown }
+export type JobEvent = { type: "progress"; data: JobProgress } | { type: "done"; data: JobDone };
+
+export type ColKindName = "empty" | "integer" | "decimal" | "date" | "timestamp" | "boolean" | "text";
+export interface ColProfile {
+  index: number; name: string; kind: ColKindName; nulls: number; non_null: number; max_chars: number; max_bytes: number;
+  int_digits: number; scale: number; date_formats: string[]; date_ambiguous: boolean;
+  number_style: { decimal: string; thousands: string | null } | null; number_ambiguous: boolean; leading_zeros: boolean; samples: string[];
+}
+export interface FileProfile {
+  columns: ColProfile[]; rows_scanned: number; more_rows: boolean; ragged_rows: number; format: string; delimiter: string | null;
+  has_header: boolean; encoding: string; sheets: string[]; warnings: string[];
+}
+export interface ReadOptions { delimiter?: string | null; has_header?: boolean | null; encoding?: string | null; sheet?: string | null }
+export interface TargetCol {
+  name: string; data_type: string; display: string; char_length: number; data_length: number; char_used: string;
+  precision: number | null; scale: number | null; nullable: boolean; insertable: boolean; note: string | null;
+}
+export type Conversion = { type: "text" } | { type: "number"; decimal: string } | { type: "date"; family: string } | { type: "timestamp"; family: string } | { type: "boolean" };
+export interface PlanIssue { severity: "info" | "warning" | "error"; message: string; fix: string | null }
+export interface PlanChoice { label: string; value: string }
+export interface ColumnMap { target: TargetCol; file_index: number | null; file_name: string | null; conversion: Conversion; issues: PlanIssue[]; choices: PlanChoice[]; suggested_type: string | null }
+export interface MappingPlan { owner: string; table: string; maps: ColumnMap[]; unmapped_file: string[]; by_position: boolean; errors: number; warnings: number }
+export interface PlanInput { assignment?: Record<string, number | null> | null; date_family?: Record<string, string>; number_decimal?: Record<string, string> }
+export interface Reject { row: number; reason: string; fields: string[] }
+export interface ValidationReport { rows: number; ok: number; rejected: number; by_column: [string, number][]; samples: Reject[]; cancelled: boolean }
+export interface ImportOptions { batch_size: number; commit: "at_end" | "per_batch"; on_error: "stop" | "skip"; max_rejects: number; truncate_first: boolean; trim: boolean; append_hint: boolean }
+export interface ImportReport {
+  read: number; inserted: number; rejected: number; committed: boolean; rolled_back: boolean; reject_file: string | null;
+  stopped: string | null; cancelled: boolean; elapsed_ms: number; rows_per_sec: number; samples: Reject[];
+}

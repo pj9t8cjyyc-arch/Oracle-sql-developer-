@@ -33,6 +33,8 @@ const P: Record<string, string> = {
   star: "m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9L12 3Z",
   trash: "M4 7h16 M9 7V4h6v3 M6 7l1 13h10l1-13 M10 11v6 M14 11v6",
   pause: "M8 5v14 M16 5v14",
+  download: "M12 4v11 m-4-4 4 4 4-4 M5 20h14",
+  upload: "M12 16V5 m-4 4 4-4 4 4 M5 20h14",
 };
 
 export type IconName = keyof typeof P;

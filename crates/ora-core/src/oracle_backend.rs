@@ -11,7 +11,7 @@ use std::thread;
 
 use oracle::{Connection, Connector};
 
-use crate::db::{Column, Cursor, Database, Outcome, Row};
+use crate::db::{BatchOutcome, Column, Cursor, Database, Outcome, Row};
 use crate::profile::ConnectionProfile;
 use crate::{Error, Result};
 
@@ -163,6 +163,45 @@ impl Database for OracleDb {
             Reply::Done => Ok(Outcome::Done),
             Reply::Failed(m) => Err(Error::Database(m)),
         }
+    }
+    fn insert_batch(&self, sql: &str, rows: &[Vec<Option<String>>]) -> Result<BatchOutcome> {
+        if rows.is_empty() {
+            return Ok(BatchOutcome::default());
+        }
+        let mut b = self
+            .conn
+            .batch(sql, rows.len())
+            .with_batch_errors()
+            .build()
+            .map_err(err)?;
+        for r in rows {
+            let params: Vec<&dyn oracle::sql_type::ToSql> = r
+                .iter()
+                .map(|c| c as &dyn oracle::sql_type::ToSql)
+                .collect();
+            b.append_row(&params).map_err(err)?;
+        }
+        // With batch errors, `execute` reports rows Oracle rejected as an `Err(BatchErrors)`
+        // while every other row HAS been inserted: that is a partial success, not a failure.
+        // (Needs Oracle client and server 12.1 or newer.)
+        let errors: Vec<(usize, String)> = match b.execute() {
+            Ok(()) => vec![],
+            Err(e) => match e.batch_errors() {
+                Some(errs) => {
+                    let mut v: Vec<(usize, String)> = errs
+                        .iter()
+                        .map(|d| (d.offset() as usize, d.message().to_string()))
+                        .collect();
+                    v.sort_by_key(|(i, _)| *i);
+                    v
+                }
+                None => return Err(err(e)),
+            },
+        };
+        Ok(BatchOutcome {
+            inserted: (rows.len() - errors.len()) as u64,
+            errors,
+        })
     }
     fn commit(&self) -> Result<()> {
         self.conn.commit().map_err(err)

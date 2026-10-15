@@ -16,3 +16,10 @@ thiserror = "2"
 oracle = { version = "0.6", optional = true }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.11.1"
+csv = "1.4.0"
+encoding_rs = "0.8.42"
+encoding_rs_io = "0.1.8"
+flate2 = "1.1.10"
+rust_xlsxwriter = { version = "0.99.1", features = ["constant_memory"] }
+calamine = { version = "0.36.1", features = ["dates"] }
+chrono = "0.4.45"

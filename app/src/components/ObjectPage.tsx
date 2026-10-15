@@ -6,6 +6,8 @@ import { Icon, KindIcon } from "../ui-icons";
 import type { ColumnInsight, Environment, ObjectEntry, ObjectKind, TableInsight } from "../types";
 import { CodeView } from "./CodeView";
 import { ColumnFocus, CommentEditor } from "./ColumnFocus";
+import { ExportDialog } from "./ExportDialog";
+import { ImportWizard } from "./ImportWizard";
 import { ConstraintRows, Empty, IndexRows, ReferencedByRows, SequenceRows, TriggerRows, type OpenFn } from "./Related";
 import { ResultGrid } from "./ResultGrid";
 
@@ -140,6 +142,7 @@ function DepsTab({ api, conn, target, onOpen }: { api: Api; conn: string; target
 function TableView({ api, conn, target, cache, onOpen, onWorksheet, onError }: PageProps) {
   const [tab, setTab] = useState<TableTab>("overview");
   const [col, setCol] = useState<string | undefined>(target.column);
+  const [xfer, setXfer] = useState<"export" | "import">();
   useEffect(() => { if (target.column) { setCol(target.column); setTab("columns"); } }, [target.column, target.name]);
   const res = useAsync(() => cache.get(target.owner, target.name), [cache, target.owner, target.name]);
   const t = res.data;
@@ -158,7 +161,11 @@ function TableView({ api, conn, target, cache, onOpen, onWorksheet, onError }: P
     <>
       <Header target={target} conn={conn} status={target.entry ? { ok: target.entry.ok, text: target.entry.status } : undefined}>
         <button onClick={() => onWorksheet(`SELECT * FROM ${target.owner}.${target.name}`)}><Icon name="sql" size={14} /> Query</button>
+        <button onClick={() => setXfer("export")} title="Export to CSV, Excel or SQL INSERT"><Icon name="download" size={14} /> Export</button>
+        {target.kind === "TABLE" && <button onClick={() => setXfer("import")} title="Load a CSV or Excel file into this table"><Icon name="upload" size={14} /> Import</button>}
       </Header>
+      {xfer === "export" && <ExportDialog api={api} conn={conn.id} env={conn.env} source={{ type: "table", owner: target.owner, table: target.name, where_clause: null }} label={`${target.owner}.${target.name}`} defaultName={target.name.toLowerCase()} onClose={() => setXfer(undefined)} onError={onError} />}
+      {xfer === "import" && <ImportWizard api={api} conn={conn.id} env={conn.env} schemas={[target.owner]} initial={{ owner: target.owner, table: target.name }} onClose={() => setXfer(undefined)} onError={onError} onImported={() => { cache.invalidate(target.owner, target.name); res.reload(); }} />}
       <Load state={res}>
         {t && (
           <>
