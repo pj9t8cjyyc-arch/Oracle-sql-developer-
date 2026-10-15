@@ -3,7 +3,7 @@ import type { Api } from "../api";
 import { Icon, KindIcon } from "../ui-icons";
 import { KINDS, type ObjectEntry, type ObjectKind, type Profile } from "../types";
 
-export interface ConnState { id: string; profile: Profile; schemas: string[]; user: string }
+export interface ConnState { id: string; key: string; profile: Profile; schemas: string[]; user: string }
 const LIMIT = 300;
 
 interface Props {

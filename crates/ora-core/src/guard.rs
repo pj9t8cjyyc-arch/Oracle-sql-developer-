@@ -67,7 +67,7 @@ fn first_word(toks: &[Tok]) -> Option<&str> {
     })
 }
 
-fn is_plsql(toks: &[Tok]) -> bool {
+pub(crate) fn is_plsql(toks: &[Tok]) -> bool {
     match first_word(toks) {
         Some("BEGIN") | Some("DECLARE") | Some("CALL") | Some("EXEC") | Some("EXECUTE") => true,
         Some("CREATE") => {

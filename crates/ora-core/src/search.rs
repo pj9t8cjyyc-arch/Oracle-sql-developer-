@@ -147,7 +147,7 @@ impl SearchIndex {
 
 /// `emp dep` -> `"emp"* AND "dep"*`. Everything except letters/digits is dropped,
 /// so user input can never inject FTS5 operators.
-fn fts_query(text: &str) -> Option<String> {
+pub(crate) fn fts_query(text: &str) -> Option<String> {
     let words: Vec<String> = text
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())

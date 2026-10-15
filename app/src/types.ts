@@ -69,3 +69,27 @@ export interface SequenceInfo {
   cycle: boolean; ordered: boolean; cache: string; last_number: string;
 }
 export interface ObjectDeps { uses: Dependency[]; used_by: Dependency[] }
+
+// ---- History + worksheets (local SQLite) ----
+export interface ConnInfo { id: string; key: string }
+export interface HistoryHit {
+  hash: string; sql: string; kind: string; tables: string[];
+  runs: number; ok_runs: number; first_run: number; last_run: number; avg_ms: number | null;
+  last_status: "ok" | "error" | "cancelled"; last_conn_name: string; last_conn_key: string; last_owner: string;
+  pinned: boolean; snippet: string | null; score: number;
+}
+export interface HistoryQuery {
+  text?: string; conn_key?: string | null; only_ok?: boolean; since?: number | null; until?: number | null;
+  kinds?: string[]; pinned_only?: boolean; limit?: number; offset?: number;
+}
+export interface OutlineItem { kind: string; tables: string; preview: string; start: number; end: number }
+export interface WorksheetRec {
+  uuid: string; conn_key: string; conn_name: string; owner: string; title: string; custom_title: boolean;
+  sql: string; outline: OutlineItem[]; created_at: number; updated_at: number; closed_at: number | null;
+  pinned: boolean; position: number; runs: number;
+}
+export interface WorksheetSave { uuid: string; conn_key: string; conn_name: string; owner: string; title: string | null; sql: string; position: number }
+export interface WorksheetFilter { state?: "open" | "closed" | "all"; text?: string; conn_key?: string | null; limit?: number }
+export interface Step { at: number; hash: string; sql: string; kind: string; status: string; duration_ms: number; rows: number | null; error: string | null }
+export interface HistoryStatus { enabled: boolean; persistent: boolean; stats: { executions: number; distinct_queries: number; worksheets: number; first_at: number | null; size_bytes: number } }
+export interface StatementRange { start: number; end: number; kind: string; text: string }

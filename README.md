@@ -2,18 +2,31 @@
 
 A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React + CodeMirror UI.
 
-## Status: workspace redesign (multi-connection dictionary browser)
+## Status: history & worksheets (local SQLite)
 
 | Piece | State |
 |---|---|
-| Multiple simultaneous connections (Tauri state keyed by connection id; every command takes `conn`) | compiles; **not run against real databases** |
-| Explorer: connections → schemas → kinds (tables, views, mviews, indexes, sequences, triggers, procedures, functions, packages, types, synonyms) with counts; invalid/unusable/disabled flagged | UI verified in demo mode |
-| Object pages: table overview (indexes, triggers, sequences, constraints, referenced-by at a glance), column focus pane, per-kind pages with source/DDL/dependencies | UI verified in demo mode |
-| Sequences: identity columns, trigger-assigned (`:NEW.col := seq.NEXTVAL`, parsed from trigger source), table dependencies | 79 unit tests; **dictionary SQL not run on a real Oracle** |
-| Cross-connection search (Ctrl/Cmd+K) | UI verified in demo mode |
-| Phase 0/1 (guard, streaming, insight, autocomplete, FTS5 search, comments) | as before |
+| Every executed statement recorded (when, how long, rows, ok/error/cancelled, which connection/schema/worksheet) | 102 core tests; recording hooked into the Tauri `run_query` command |
+| Search over all history (words, tables, columns), ranked by relevance + run count + recency; starred queries; filters by connection, time, kind, success | tested on real SQLite FTS5; **21 ms over 20,000 executions** |
+| Worksheets autosaved (≈0.7 s after typing), restored on next start, archived on close, searchable | UI verified in a browser incl. a real page reload (demo backend) |
+| Statement outline + auto-title per worksheet; step-by-step trail of what was actually run | tested |
+| Ctrl+Enter runs the statement under the cursor; F5 / *Run script* runs all in order, stopping at the first failure | UI verified |
+| "You ran this before" suggestions in the editor and in Ctrl+K | UI verified |
+| Everything above **against a real Oracle** | **not run** (no database here) |
 
-**Sequence attribution** — Oracle has no table→sequence link, so each use is tagged with how it was found: `identity` (exact), `trigger` (exact column, from parsing the trigger body; dynamic SQL or indirection through a variable is not detected) or `default` (the table depends on the sequence, e.g. a column DEFAULT; the column is *not* guessed).
+**Where it lives:** one file, `workspace.sqlite`, in the app data directory (WAL mode). Query text is stored once per distinct query (case/whitespace/comment-insensitive, literals kept) and every run is a small row pointing at it. Search is FTS5; nothing is sent anywhere.
+
+**Privacy:** passwords are masked before anything is written to history (`IDENTIFIED BY`, `IDENTIFIED BY VALUES`, `REPLACE`, SQL*Plus `CONNECT user/pass`), including inside stored error messages. Worksheet text is stored exactly as typed. The file is **not encrypted**: use OS disk encryption on shared machines. *Recording* can be paused from the History page.
+
+**Not built yet:** automatic retention (`history_purge` exists as a command but has no UI), export/backup of the history file, per-environment "never record" rules.
+
+## Plan: what comes next (to discuss)
+
+1. **Package explorer** (you have 300–400 packages): index every package member from `ALL_PROCEDURES` / `ALL_ARGUMENTS` (signatures, overloads), keep the source in the existing FTS5 index, and show per package: members with signatures, who calls it, which tables it reads or writes, size, invalid/wrapped state, and members nothing references (dead-code candidates). Calls come from PL/Scope (`ALL_IDENTIFIERS`) when the code was compiled with `PLSCOPE_SETTINGS='IDENTIFIERS:ALL'`, otherwise from our own parser (heuristic, labelled as such). A virtualised tree and lazy source loading keep 400 packages instant.
+2. **Linkage graph tab**: nodes = tables, views, packages, procedures, triggers, sequences; edges = foreign keys, `ALL_DEPENDENCIES`, trigger→table/sequence. Two questions answered directly: *"what breaks if I change this?"* (used-by closure) and *"what does this need?"* (uses closure), with hop limits and type filters so a big schema stays readable. The graph data is cached in the same SQLite file and traversed with recursive queries.
+3. **AI** (needs your input): where your existing AI code runs (Rust, Python sidecar, remote service) and which provider decides the shape. My suggestion: a provider trait with a local-model option; send **metadata and your own history, never row data**, by default; uses in this order: (a) NL→SQL grounded in the schema *and the queries you have already run*, (b) explain a package/trigger, (c) worksheet titles and summaries, (d) optimisation hints next to the explain plan. Anything the AI writes passes the same safe-mode guard, and only read-only statements run without confirmation.
+4. **DuckDB**: keep for analytics, not as a second copy of history. It can `ATTACH` the SQLite file directly, so "how did this query's runtime change over a year" needs no duplicate. DuckDB's main job stays the AWR/ASH-style monitor and fast file profiling for import/export.
+5. Still pending from before: fast parallel export/import with type mapping, sandbox simulation, explain-plan viewer, and running the ignored integration tests against a real Oracle.
 
 ### Try it
 
@@ -41,6 +54,7 @@ Prints first-page latency and rows/second for a 100k-row stream, and checks the 
 - **Result-header badges** only appear for column names that exist in exactly one table referenced by the query; ambiguous names get none rather than wrong ones. Aliased/computed columns get none.
 - **Autocomplete** runs on an in-memory catalog snapshot (refreshed per schema; **Reindex** also indexes PL/SQL source, capped at 300k lines). Known limit: a table that follows a parenthesised subquery in the same comma-separated `FROM` list is not seen.
 - **Comments** are DDL (immediate, not rollback-able): the exact statement is always shown for confirmation.
+- History records the time to first rows (or to completion for non-queries), not the time to scroll through a long result; the row count is updated as you scroll.
 - Worksheets on the same connection share one session (and transaction); Commit/Rollback apply to the connection, not the tab.
 - Explorer lists are capped at 300 rows per kind (use the filter); there is no virtualised tree yet.
 - The search index is one SQLite file per `user@host:port/service` in the app data directory.

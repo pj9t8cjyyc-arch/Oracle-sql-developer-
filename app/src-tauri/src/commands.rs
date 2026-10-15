@@ -3,13 +3,15 @@
 
 use std::path::PathBuf;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::sync::{Arc, Mutex, RwLock};
 
 use ora_core::catalog::{self, Dependencies, ObjectEntry, SequenceInfo};
 use ora_core::comments;
 use ora_core::complete::{self, Completions};
 use ora_core::db::Database;
+use ora_core::history::{ExecRecord, ExecStatus, HistoryHit, HistoryQuery, HistoryStats, HistoryStore, Worksheet, WorksheetFilter, WorksheetSave, Step};
 use ora_core::insight::{self, TableInsight};
 use ora_core::meta::{self, MetaCache};
 use ora_core::parse::{self, TableRef};
@@ -17,15 +19,40 @@ use ora_core::search::{self, Hit, SearchIndex, SearchQuery};
 use ora_core::oracle_backend::OracleDb;
 use ora_core::profile::ConnectionProfile;
 use ora_core::schema;
+use ora_core::sqltext::split_statements;
 use ora_core::session::{Page, QueryManager, RunOptions, RunResult};
 use tauri::{AppHandle, Manager, State};
 
-#[derive(Default)]
 pub struct AppState {
     /// Several databases can be connected at once; each has an id.
     conns: Mutex<HashMap<String, Connected>>,
     next_id: AtomicU64,
     profiles_lock: Mutex<()>,
+    /// Local SQLite history + worksheets (survives restarts).
+    history: Mutex<HistoryStore>,
+    /// `false` when the history file could not be opened and an in-memory store is used instead.
+    history_persistent: bool,
+    history_enabled: AtomicBool,
+    /// (connection id, cursor handle) -> execution id, so rows fetched later are added to the record.
+    open_execs: Mutex<HashMap<(String, u64), i64>>,
+}
+
+impl AppState {
+    pub fn new(history: HistoryStore, persistent: bool) -> Self {
+        Self {
+            conns: Mutex::default(),
+            next_id: AtomicU64::new(0),
+            profiles_lock: Mutex::default(),
+            history: Mutex::new(history),
+            history_persistent: persistent,
+            history_enabled: AtomicBool::new(true),
+            open_execs: Mutex::default(),
+        }
+    }
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 #[derive(Clone)]
@@ -34,17 +61,30 @@ struct Connected {
     queries: Arc<QueryManager>,
     meta: Arc<RwLock<MetaCache>>,
     index: Arc<Mutex<SearchIndex>>,
+    /// Stable identity of user@host:port/service: the same across sessions, unlike the connection id.
+    key: String,
+    name: String,
 }
 
-/// Stable (FNV-1a) file-name fragment so each user@host/service gets its own index.
-fn index_file_name(p: &ConnectionProfile) -> String {
+/// Stable (FNV-1a) identity of user@host:port/service.
+fn connection_key(p: &ConnectionProfile) -> String {
     let id = format!("{}@{}:{}/{}", p.user, p.host, p.port, p.service).to_lowercase();
     let mut h: u64 = 0xcbf29ce484222325;
     for b in id.bytes() {
         h ^= b as u64;
         h = h.wrapping_mul(0x100000001b3);
     }
-    format!("index-{h:016x}.sqlite")
+    format!("{h:016x}")
+}
+
+fn index_file_name(p: &ConnectionProfile) -> String {
+    format!("index-{}.sqlite", connection_key(p))
+}
+
+#[derive(serde::Serialize)]
+pub struct ConnInfo {
+    id: String,
+    key: String,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -110,8 +150,9 @@ pub fn delete_profile(app: AppHandle, state: State<'_, AppState>, name: String) 
 }
 
 #[tauri::command]
-pub async fn connect(app: AppHandle, state: State<'_, AppState>, profile: ConnectionProfile, password: String) -> CmdResult<String> {
+pub async fn connect(app: AppHandle, state: State<'_, AppState>, profile: ConnectionProfile, password: String) -> CmdResult<ConnInfo> {
     let env = profile.environment;
+    let (key, name) = (connection_key(&profile), profile.name.clone());
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let index_path = dir.join(index_file_name(&profile));
@@ -129,32 +170,77 @@ pub async fn connect(app: AppHandle, state: State<'_, AppState>, profile: Connec
             db,
             meta: Arc::new(RwLock::new(MetaCache::default())),
             index: Arc::new(Mutex::new(index)),
+            key: key.clone(),
+            name,
         },
     );
-    Ok(id)
+    Ok(ConnInfo { id, key })
 }
 
 #[tauri::command]
 pub fn disconnect(state: State<'_, AppState>, conn: String) {
     // Dropping the last Arc closes the connection.
     state.conns.lock().unwrap().remove(&conn);
+    state.open_execs.lock().unwrap().retain(|(c, _), _| c != &conn);
 }
 
 #[tauri::command]
-pub async fn run_query(state: State<'_, AppState>, conn: String, sql: String, confirmed: bool, page_size: usize) -> CmdResult<RunResult> {
-    let q = current(&state, &conn)?.queries;
-    blocking(move || q.run(&sql, RunOptions { page_size, confirmed, ..Default::default() })).await
+pub async fn run_query(state: State<'_, AppState>, conn: String, sql: String, confirmed: bool, page_size: usize, owner: String, worksheet: Option<String>) -> CmdResult<RunResult> {
+    let c = current(&state, &conn)?;
+    let q = c.queries.clone();
+    let text = sql.clone();
+    let started_at = now_ms();
+    let t0 = Instant::now();
+    let raw = tauri::async_runtime::spawn_blocking(move || q.run(&text, RunOptions { page_size, confirmed, ..Default::default() }))
+        .await
+        .map_err(|e| e.to_string())?;
+    let duration_ms = t0.elapsed().as_millis() as i64;
+
+    // Record what actually ran. Statements that were refused or are waiting for
+    // confirmation never reached the database, so they are not history.
+    let (status, rows, error) = match &raw {
+        Ok(RunResult::Rows { rows, .. }) => (Some(ExecStatus::Ok), Some(rows.len() as i64), None),
+        Ok(RunResult::Affected { count, .. }) => (Some(ExecStatus::Ok), Some(*count as i64), None),
+        Ok(RunResult::Done { .. }) => (Some(ExecStatus::Ok), None, None),
+        Ok(RunResult::NeedsConfirmation { .. }) => (None, None, None),
+        Err(ora_core::Error::Database(m)) => (Some(if m.contains("ORA-01013") { ExecStatus::Cancelled } else { ExecStatus::Error }), None, Some(m.clone())),
+        Err(_) => (None, None, None),
+    };
+    if let (Some(status), true) = (status, state.history_enabled.load(Ordering::Relaxed)) {
+        let rec = ExecRecord { sql: sql.clone(), conn_key: c.key.clone(), conn_name: c.name.clone(), owner, worksheet, started_at, duration_ms, rows, status, error };
+        match state.history.lock().unwrap().record_execution(&rec) {
+            Ok(id) => {
+                if let Ok(RunResult::Rows { handle, done: false, .. }) = &raw {
+                    state.open_execs.lock().unwrap().insert((conn.clone(), *handle), id);
+                }
+            }
+            Err(e) => eprintln!("history: could not record execution: {e}"),
+        }
+    }
+    raw.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn fetch_more(state: State<'_, AppState>, conn: String, handle: u64, page_size: usize) -> CmdResult<Page> {
     let q = current(&state, &conn)?.queries;
-    blocking(move || q.fetch_more(handle, page_size)).await
+    let page = blocking(move || q.fetch_more(handle, page_size)).await?;
+    let key = (conn, handle);
+    let exec = {
+        let mut m = state.open_execs.lock().unwrap();
+        if page.done { m.remove(&key) } else { m.get(&key).copied() }
+    };
+    if let Some(id) = exec {
+        if let Err(e) = state.history.lock().unwrap().add_rows(id, page.rows.len() as i64) {
+            eprintln!("history: could not update row count: {e}");
+        }
+    }
+    Ok(page)
 }
 
 #[tauri::command]
 pub fn close_query(state: State<'_, AppState>, conn: String, handle: u64) -> CmdResult<()> {
     current(&state, &conn)?.queries.close(handle);
+    state.open_execs.lock().unwrap().remove(&(conn, handle));
     Ok(())
 }
 
@@ -293,4 +379,112 @@ pub async fn preview_table(state: State<'_, AppState>, conn: String, owner: Stri
 pub async fn object_dependencies(state: State<'_, AppState>, conn: String, owner: String, name: String) -> CmdResult<Dependencies> {
     let db = current(&state, &conn)?.db;
     blocking(move || catalog::dependencies(db.as_ref(), &owner, &name)).await
+}
+
+// ------------------------------------------------------------ history + worksheets
+
+fn history<T>(state: &State<'_, AppState>, f: impl FnOnce(&mut HistoryStore) -> ora_core::Result<T>) -> CmdResult<T> {
+    f(&mut state.history.lock().unwrap()).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+pub struct HistoryStatus {
+    enabled: bool,
+    /// `false`: the history file could not be opened, so history only lasts until the app closes.
+    persistent: bool,
+    stats: HistoryStats,
+}
+
+#[tauri::command]
+pub fn history_status(state: State<'_, AppState>) -> CmdResult<HistoryStatus> {
+    let stats = history(&state, |h| h.stats())?;
+    Ok(HistoryStatus { enabled: state.history_enabled.load(Ordering::Relaxed), persistent: state.history_persistent, stats })
+}
+
+#[tauri::command]
+pub fn history_set_enabled(state: State<'_, AppState>, enabled: bool) {
+    state.history_enabled.store(enabled, Ordering::Relaxed);
+}
+
+#[tauri::command]
+pub fn history_search(state: State<'_, AppState>, query: HistoryQuery) -> CmdResult<Vec<HistoryHit>> {
+    history(&state, |h| h.search(&query, now_ms()))
+}
+
+#[tauri::command]
+pub fn history_suggest(state: State<'_, AppState>, typed: String, conn_key: Option<String>, limit: usize) -> CmdResult<Vec<HistoryHit>> {
+    history(&state, |h| h.suggest(&typed, conn_key.as_deref(), limit, now_ms()))
+}
+
+#[tauri::command]
+pub fn history_pin(state: State<'_, AppState>, hash: String, pinned: bool) -> CmdResult<()> {
+    history(&state, |h| h.set_pinned(&hash, pinned))
+}
+
+#[tauri::command]
+pub fn history_forget(state: State<'_, AppState>, hash: String) -> CmdResult<()> {
+    history(&state, |h| h.forget_query(&hash))
+}
+
+#[tauri::command]
+pub fn history_purge(state: State<'_, AppState>, before_ms: i64) -> CmdResult<usize> {
+    history(&state, |h| h.purge_before(before_ms))
+}
+
+#[tauri::command]
+pub fn ws_save(state: State<'_, AppState>, ws: WorksheetSave) -> CmdResult<Option<Worksheet>> {
+    history(&state, |h| h.save_worksheet(&ws, now_ms()))
+}
+
+#[tauri::command]
+pub fn ws_close(state: State<'_, AppState>, uuid: String) -> CmdResult<()> {
+    history(&state, |h| h.close_worksheet(&uuid, now_ms()))
+}
+
+#[tauri::command]
+pub fn ws_pin(state: State<'_, AppState>, uuid: String, pinned: bool) -> CmdResult<()> {
+    history(&state, |h| h.set_worksheet_pinned(&uuid, pinned))
+}
+
+#[tauri::command]
+pub fn ws_delete(state: State<'_, AppState>, uuid: String) -> CmdResult<()> {
+    history(&state, |h| h.delete_worksheet(&uuid))
+}
+
+#[tauri::command]
+pub fn ws_list(state: State<'_, AppState>, filter: WorksheetFilter) -> CmdResult<Vec<Worksheet>> {
+    history(&state, |h| h.list_worksheets(&filter))
+}
+
+#[tauri::command]
+pub fn ws_get(state: State<'_, AppState>, uuid: String) -> CmdResult<Option<Worksheet>> {
+    history(&state, |h| h.get_worksheet(&uuid))
+}
+
+#[tauri::command]
+pub fn ws_steps(state: State<'_, AppState>, uuid: String) -> CmdResult<Vec<Step>> {
+    history(&state, |h| h.worksheet_steps(&uuid))
+}
+
+#[derive(serde::Serialize)]
+pub struct StatementRange {
+    /// UTF-16 offsets (what the editor uses).
+    start: usize,
+    end: usize,
+    kind: ora_core::guard::StatementKind,
+    text: String,
+}
+
+/// Split a script into statements (`;`, or `/` after PL/SQL blocks) so the editor can
+/// run the one under the cursor or all of them in order.
+#[tauri::command]
+pub fn statements(sql: String) -> Vec<StatementRange> {
+    let mut utf16 = Vec::with_capacity(sql.chars().count() + 1);
+    let mut units = 0;
+    for c in sql.chars() {
+        utf16.push(units);
+        units += c.len_utf16();
+    }
+    utf16.push(units);
+    split_statements(&sql).into_iter().map(|s| StatementRange { start: utf16[s.start], end: utf16[s.end], kind: s.kind, text: s.text }).collect()
 }

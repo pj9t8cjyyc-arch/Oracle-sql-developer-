@@ -9,6 +9,7 @@ pub mod db;
 pub mod error;
 pub mod fake;
 pub mod guard;
+pub mod history;
 pub mod insight;
 pub mod lexer;
 pub mod meta;
@@ -19,5 +20,6 @@ pub mod profile;
 pub mod schema;
 pub mod search;
 pub mod session;
+pub mod sqltext;
 
 pub use error::{Error, Result};
