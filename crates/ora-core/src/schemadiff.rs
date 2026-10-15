@@ -666,7 +666,9 @@ fn draft_script(
         for ch in &td.changes {
             match (ch.what.as_str(), ch.change.as_str()) {
                 ("column", "only_a") => {
-                    let c = x.columns.iter().find(|c| c.name == ch.name).unwrap();
+                    let Some(c) = x.columns.iter().find(|c| c.name == ch.name) else {
+                        continue;
+                    };
                     out.push_str(&format!(
                         "ALTER TABLE {tn} ADD ({} {});\n",
                         q(&c.name),
@@ -677,10 +679,12 @@ fn draft_script(
                     }
                 }
                 ("column", "differs") => {
-                    let (c, d) = (
-                        x.columns.iter().find(|c| c.name == ch.name).unwrap(),
-                        y.columns.iter().find(|c| c.name == ch.name).unwrap(),
-                    );
+                    let (Some(c), Some(d)) = (
+                        x.columns.iter().find(|c| c.name == ch.name),
+                        y.columns.iter().find(|c| c.name == ch.name),
+                    ) else {
+                        continue;
+                    };
                     let mut parts = String::new();
                     if c.data_type != d.data_type {
                         parts.push_str(&format!(" {}", c.data_type));
