@@ -4,7 +4,8 @@
 // none of this runs in the real app.
 import type { Api } from "./api";
 import { mockHistory, record } from "./mock-history";
-import { aiApi } from "./mock-ai";
+import { aiApi, aiListeners } from "./mock-ai";
+import { askApi } from "./mock-ask";
 import { compareApi } from "./mock-compare";
 import { graphApi } from "./mock-graph";
 import { transferApi } from "./mock-transfer";
@@ -382,6 +383,7 @@ export const mockApi: Api = {
   ...transfer,
   ...graphApi(),
   ...aiApi(),
+  ...askApi(aiListeners),
   ...compareApi({ rows: (side) => { const src = side.type === "query" ? { type: "query" as const, sql: side.sql } : { type: "table" as const, owner: (side as { owner: string }).owner, table: (side as { table: string }).table, where_clause: null }; const conn = (side as { conn: string }).conn; const d = tableRowsFor(conn, src); return { columns: d.columns, rows: d.rows }; } }),
   historyStatus: () => mockHistory.status(),
   historySetEnabled: (e) => mockHistory.setEnabled(e),

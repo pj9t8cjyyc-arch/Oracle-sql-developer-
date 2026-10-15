@@ -41,9 +41,22 @@ A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React +
 | Streaming client for the UI (`ai-client.ts`): events that arrive before the call is acknowledged are kept, other calls' events ignored, cancel works before the id is known, auth errors are a distinct type | 5 checks run in Node |
 | Everything above **against your real endpoint** | **not run**: needs your URL, model and token. `AI_BASE_URL=… AI_MODEL=… AI_TOKEN=… cargo test -p ora-core --test ai_it -- --ignored --nocapture` checks it in one go |
 
-**Nothing is sent yet.** This layer only carries a chat. What may go into a prompt (schema only, statistics, sample rows) is decided by the context builder, which comes next, and defaults to metadata only.
+**What may go into a prompt** is decided by the context builder (next section); it sends schema metadata only.
 
 **Limits:** cancel is checked between streamed chunks, so a service that stays silent keeps the call open until the timeout; the HTTP client uses the system proxy settings from the environment, but a custom corporate CA is not configurable yet; only the OpenAI-compatible request format is implemented.
+
+## Status: explain plan & Ask AI
+
+| Piece | State |
+|---|---|
+| **Explain plan** (worksheet **Explain**): `EXPLAIN PLAN` for the statement at the cursor or the selection, **never runs it**; plan rows are deleted afterwards. Tree with cost share per step, hot path, predicates, optimizer notes | 8 core tests on a fake database |
+| **Findings** with the step, why, and a suggestion: full scans (by size), cartesian joins, implicit conversions, functions on columns, nested loops over large outer sets, wide index scans, large sorts, filter subqueries, missing statistics, pinned or adaptive plans, and the step holding most of the cost. Index suggestions say to check the existing indexes first | tested |
+| **Context builder**: picks the part of the knowledge base a question needs (names, comments, columns, the SQL being edited, your history, foreign-key neighbours, packages that touch the tables) within a token budget, and shows it in **What is sent** before anything leaves | 10 core tests |
+| **Data policy**: metadata only (no row data); comments can be switched off; **Never send** hides tables or columns by `NAME`, `TABLE.COLUMN` or `PAY*` completely (name, comments, joins, indexes); database text cannot close the prompt's data tags | tested |
+| **Ask AI** panel: Write SQL, Ask, Explain, Fix error; streams the answer; each ```sql block is **checked against the schema** (unknown tables or columns, other schemas, data-changing statements) before **Insert into worksheet** | UI verified in demo mode |
+| Against a **real Oracle / real AI endpoint** | **not run**: ignored test `explain_plan_reads_the_plan_and_cleans_up`; needs your endpoint for Ask |
+
+**Limits:** Ask needs the knowledge base built first (Knowledge → Build); history only influences ranking in the core (the panel does not pass it yet); the validator is a check, not a parser of every Oracle feature, so a clean result is not a guarantee; `PLAN_TABLE` must exist (it does in 12c and later); the plan is the optimizer's estimate, not what ran.
 
 ## Status: PL/Scope (exact package usage)
 

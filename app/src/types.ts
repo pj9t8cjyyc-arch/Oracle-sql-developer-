@@ -248,3 +248,20 @@ export interface SchemaDiff {
   owner_a: string; owner_b: string; tables_only_a: string[]; tables_only_b: string[]; tables: SchemaTableDiff[]; sequences: SchemaChange[];
   code: CodeDiff[]; code_compared: boolean; summary: SchemaSummary; script: string; notes: string[];
 }
+
+// ---- explain plan
+export interface PlanNode {
+  id: number; parent_id: number | null; depth: number; operation: string; object_owner: string | null; object_name: string | null; object_alias: string | null;
+  cost: number | null; self_cost: number | null; cost_pct: number | null; rows: number | null; bytes: number | null; seconds: number | null;
+  access: string | null; filter: string | null; children: number[]; hot: boolean;
+}
+export interface PlanFinding { severity: "high" | "warn" | "info"; code: string; title: string; detail: string; steps: number[]; suggestion: string | null }
+export interface Plan { nodes: PlanNode[]; total_cost: number | null; notes: string[]; text: string; findings: PlanFinding[] }
+
+// ---- Ask (schema-aware AI)
+export type AskMode = "ask" | "write_sql" | "explain" | "fix";
+export interface AskInput { mode: AskMode; question: string; sql: string | null; error: string | null; history: ChatMessage[] }
+export interface ContextPolicy { include_comments: boolean; include_history: boolean; exclude: string[]; max_tokens: number; max_objects: number }
+export interface CtxObject { id: string; why: string; score: number }
+export interface AskContext { text: string; objects: CtxObject[]; join_paths: string[]; tokens_estimate: number; truncated: boolean; excluded: number }
+export interface SqlIssue { severity: "error" | "warn"; message: string }

@@ -834,7 +834,7 @@ pub async fn kb_build(
     Ok(summary)
 }
 
-fn kb_for(
+pub(crate) fn kb_for(
     state: &State<'_, AppState>,
     conn: &str,
     owner: &str,
@@ -1066,4 +1066,18 @@ pub async fn client_status() -> CmdResult<ClientStatus> {
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+// ------------------------------------------------------------ explain plan
+
+/// Explains a statement without running it; the plan rows are removed from `PLAN_TABLE` afterwards.
+#[tauri::command]
+pub async fn explain_plan(
+    state: State<'_, AppState>,
+    conn: String,
+    sql: String,
+) -> CmdResult<ora_core::plan::Plan> {
+    let c = current(&state, &conn)?;
+    let db = c.db.clone();
+    blocking(move || ora_core::plan::explain(db.as_ref(), &sql)).await
 }

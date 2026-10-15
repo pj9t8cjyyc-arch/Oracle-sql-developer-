@@ -17,7 +17,13 @@ export interface RunRequest {
   all: boolean;
 }
 
-export interface EditorHandle { run(all: boolean): void }
+export interface EditorHandle {
+  run(all: boolean): void;
+  /** The selection, document and cursor as a run would see them. */
+  request(): RunRequest;
+  /** Replaces the selection, or appends after the last statement when nothing is selected. */
+  insert(text: string): void;
+}
 
 interface Props {
   value: string;
@@ -111,7 +117,23 @@ export function SqlEditor({ value, onChange, onRun, onReady, complete, suggestHi
 
   // The editor instance can outlive a change of parent (e.g. a worksheet binding to its
   // connection), so hand the run handle over on every render, not once at creation.
-  useEffect(() => { onReady?.({ run: (all) => fireRef.current?.(all) }); });
+  useEffect(() => { onReady?.({
+    run: (all) => fireRef.current?.(all),
+    request: () => {
+      const v = view.current!;
+      const sel = v.state.selection.main;
+      return { selection: sel.empty ? null : v.state.sliceDoc(sel.from, sel.to), doc: v.state.doc.toString(), cursor: sel.head, all: false };
+    },
+    insert: (text) => {
+      const v = view.current;
+      if (!v) return;
+      const sel = v.state.selection.main;
+      if (!sel.empty) { v.dispatch({ changes: { from: sel.from, to: sel.to, insert: text } }); return; }
+      const end = v.state.doc.length;
+      const sep = end === 0 ? "" : v.state.doc.toString().endsWith("\n") ? "\n" : "\n\n";
+      v.dispatch({ changes: { from: end, insert: sep + text } });
+    },
+  }); });
 
   useEffect(() => {
     const v = view.current;

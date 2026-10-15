@@ -962,3 +962,24 @@ fn other_connection_methods_reach_the_database_and_report_what_they_reached() {
     );
     assert!(d.major.is_some() && !d.session_user.is_empty());
 }
+
+#[test]
+#[ignore]
+fn explain_plan_reads_the_plan_and_cleans_up() {
+    let (db, _) = connect();
+    let p = ora_core::plan::explain(&db, "SELECT * FROM dual WHERE dummy = 'X'").expect("explain");
+    assert!(
+        !p.nodes.is_empty() && p.nodes[0].operation.contains("SELECT"),
+        "{:?}",
+        p.nodes
+    );
+    assert!(!p.text.is_empty());
+    // The statement was not run and no plan rows are left behind for this statement id.
+    let (_, rows) = collect(
+        &db,
+        "SELECT COUNT(*) FROM plan_table WHERE statement_id LIKE 'ORAIDE%'",
+        &[],
+    )
+    .unwrap();
+    assert!(format!("{:?}", rows[0][0]).contains('0'), "{:?}", rows[0]);
+}

@@ -120,6 +120,14 @@ pub fn ai_chat_start(
     state: State<'_, AppState>,
     request: ChatRequest,
 ) -> CmdResult<String> {
+    start_chat(app, &state, request)
+}
+
+fn start_chat(
+    app: AppHandle,
+    state: &State<'_, AppState>,
+    request: ChatRequest,
+) -> CmdResult<String> {
     state.ai.status().config_error.map_or(Ok(()), Err)?;
     let id = format!("ai{}", state.job_seq.fetch_add(1, Ordering::Relaxed) + 1);
     let cancel = Arc::new(AtomicBool::new(false));
@@ -169,4 +177,79 @@ pub fn ai_cancel(state: State<'_, AppState>, id: String) {
     if let Some(c) = state.ai_calls.lock().unwrap().get(&id) {
         c.store(true, Ordering::Relaxed);
     }
+}
+
+// ------------------------------------------------------------ Ask: schema-aware questions
+
+#[derive(Serialize)]
+pub struct AskStarted {
+    id: String,
+    context: ora_core::context::Context,
+}
+
+fn ask_kb(
+    state: &State<'_, AppState>,
+    conn: &str,
+    owner: &str,
+) -> CmdResult<Arc<ora_core::knowledge::Knowledge>> {
+    crate::commands::kb_for(state, conn, owner)?.ok_or_else(|| {
+        "Build the knowledge base for this schema first (Knowledge → Build).".to_string()
+    })
+}
+
+/// What would be sent to the model for this request, without sending anything.
+#[tauri::command]
+pub fn ask_context(
+    state: State<'_, AppState>,
+    conn: String,
+    owner: String,
+    input: ora_core::context::AskInput,
+    policy: ora_core::context::ContextPolicy,
+) -> CmdResult<ora_core::context::Context> {
+    let kb = ask_kb(&state, &conn, &owner)?;
+    Ok(ora_core::context::build_context(
+        &kb,
+        &input.question,
+        input.sql.as_deref(),
+        &[],
+        &policy,
+    ))
+}
+
+#[tauri::command]
+pub fn ask_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    conn: String,
+    owner: String,
+    input: ora_core::context::AskInput,
+    policy: ora_core::context::ContextPolicy,
+) -> CmdResult<AskStarted> {
+    let kb = ask_kb(&state, &conn, &owner)?;
+    let context =
+        ora_core::context::build_context(&kb, &input.question, input.sql.as_deref(), &[], &policy);
+    let messages = ora_core::context::ask_messages(&context, &input);
+    let request = ChatRequest {
+        messages,
+        ..Default::default()
+    };
+    let id = start_chat(app, &state, request)?;
+    Ok(AskStarted { id, context })
+}
+
+/// Checks generated SQL against the schema before the person runs it.
+#[tauri::command]
+pub fn ask_validate(
+    state: State<'_, AppState>,
+    conn: String,
+    owner: String,
+    sql: String,
+) -> CmdResult<Vec<ora_core::context::SqlIssue>> {
+    let kb = ask_kb(&state, &conn, &owner)?;
+    Ok(ora_core::context::validate_sql(&kb, &sql))
+}
+
+#[tauri::command]
+pub fn ask_extract_sql(answer: String) -> Vec<String> {
+    ora_core::context::extract_sql_blocks(&answer)
 }

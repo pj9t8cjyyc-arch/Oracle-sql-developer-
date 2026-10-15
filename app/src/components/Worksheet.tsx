@@ -3,7 +3,9 @@ import type { Api } from "../api";
 import { badgesForQuery, type InsightCache, type QueryBadges } from "../badges";
 import { errText, useAsync } from "../hooks";
 import { Icon } from "../ui-icons";
-import type { Analysis, Column, ObjectKind, Row, StatementRange } from "../types";
+import type { Analysis, Column, ObjectKind, Plan, Row, StatementRange } from "../types";
+import { AskPanel } from "./AskPanel";
+import { PlanPanel } from "./PlanPanel";
 import { ColumnFocus } from "./ColumnFocus";
 import { ConfirmDialog } from "./Dialogs";
 import { ExportDialog } from "./ExportDialog";
@@ -59,6 +61,8 @@ export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchema
   const [focus, setFocus] = useState<{ owner: string; table: string; column: string }>();
   const [lastSelect, setLastSelect] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [plan, setPlan] = useState<Plan>();
+  const [asking, setAsking] = useState(false);
   const editor = useRef<EditorHandle>();
   const loadingMore = useRef(false);
   const handleRef = useRef<number | null>(null);
@@ -102,21 +106,41 @@ export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchema
     return okRun;
   }, [api, conn, connId, release, getCache, tab.owner, tab.id]);
 
-  /** Selection wins; otherwise the statement under the cursor; F5 runs every statement in order and stops at the first one that fails. */
-  const runRequest = useCallback(async (r: RunRequest) => {
-    if (r.selection?.trim()) { await run(r.selection); return; }
+  /** The statement a request points at: the selection, else the one under the cursor. */
+  const pickStatement = useCallback(async (r: RunRequest): Promise<string> => {
+    if (r.selection?.trim()) return r.selection;
     let ranges: StatementRange[] = [];
     try { ranges = await api.statements(r.doc); } catch { /* fall back to the whole text */ }
-    if (ranges.length === 0) { await run(r.doc); return; }
-    if (r.all && ranges.length > 1) {
-      let done = 0;
-      for (const st of ranges) { if (!(await run(st.text))) break; done++; }
-      setStatus(`Script: ran ${done} of ${ranges.length} statements${done < ranges.length ? ` — stopped at statement ${done + 1}` : ""}`);
-      return;
+    if (ranges.length === 0) return r.doc;
+    return (ranges.find((x) => r.cursor >= x.start && r.cursor <= x.end) ?? [...ranges].reverse().find((x) => x.end <= r.cursor) ?? ranges[0]).text;
+  }, [api]);
+
+  /** Selection wins; otherwise the statement under the cursor; F5 runs every statement in order and stops at the first one that fails. */
+  const runRequest = useCallback(async (r: RunRequest) => {
+    if (r.all && !r.selection?.trim()) {
+      let ranges: StatementRange[] = [];
+      try { ranges = await api.statements(r.doc); } catch { /* fall back to the whole text */ }
+      if (ranges.length > 1) {
+        let done = 0;
+        for (const st of ranges) { if (!(await run(st.text))) break; done++; }
+        setStatus(`Script: ran ${done} of ${ranges.length} statements${done < ranges.length ? ` — stopped at statement ${done + 1}` : ""}`);
+        return;
+      }
     }
-    const at = ranges.find((x) => r.cursor >= x.start && r.cursor <= x.end) ?? [...ranges].reverse().find((x) => x.end <= r.cursor) ?? ranges[0];
-    await run(at.text);
-  }, [api, run]);
+    await run(await pickStatement(r));
+  }, [api, run, pickStatement]);
+
+  const explain = useCallback(async () => {
+    const h = editor.current;
+    if (!h) return;
+    setError(""); setStatus("Explaining…");
+    try {
+      const text = (await pickStatement(h.request())).trim();
+      if (!text) { setStatus("Nothing to explain"); return; }
+      setPlan(await api.explainPlan(connId, text));
+      setStatus("Explained — the statement was not run");
+    } catch (e) { setError(errText(e)); setStatus("Failed"); }
+  }, [api, connId, pickStatement]);
 
   const loadMore = useCallback(async () => {
     const h = handleRef.current;
@@ -178,6 +202,9 @@ export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchema
         <button disabled={running} onClick={() => editor.current?.run(true)} title="Runs every statement in order and stops at the first failure (F5)">Run script</button>
         <button disabled={!running} onClick={() => api.cancelQuery(connId).catch(onError)}><Icon name="stop" size={12} /> Stop</button>
         <span className="sep" />
+        <button disabled={running} onClick={() => void explain()} title="Shows how Oracle would run the statement, without running it">Explain</button>
+        <button className={asking ? "primary" : ""} onClick={() => setAsking(!asking)} title="Ask AI about this schema">Ask AI</button>
+        <span className="sep" />
         <button onClick={() => tx("commit")} title="Shared by every worksheet on this connection">Commit</button>
         <button onClick={() => tx("rollback")}>Rollback</button>
       </div>
@@ -186,6 +213,7 @@ export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchema
           <SqlEditor value={tab.sql} onChange={(sql) => onPatch({ sql })} onRun={runRequest} onReady={(h) => { editor.current = h; }} complete={(text, pos) => api.complete(connId, text, pos, tab.owner)} suggestHistory={(typed) => api.historySuggest(typed, conn.key, 5)} />
           {error && <div className="error" role="alert">{error}</div>}
           <div className="results">
+            {plan && <PlanPanel plan={plan} onClose={() => setPlan(undefined)} />}
             {result
               ? <ResultGrid columns={result.columns} rows={result.rows} onNearEnd={loadMore} badges={qb.badges} selectedColumn={focus?.column}
                   onSelectColumn={(name) => { const t = qb.colTable[name]; if (t) setFocus({ ...t, column: name }); }} />
@@ -198,6 +226,7 @@ export function Worksheet({ api, conns, tab, getCache, onPatch, onOpen, onSchema
             {result?.truncated && <span className="warn">Result capped at the row limit</span>}
           </footer>
         </div>
+        {asking && <AskPanel api={api} conn={connId} owner={tab.owner} getSql={() => { const r = editor.current?.request(); return r?.selection?.trim() ? r.selection : r?.doc ?? tab.sql; }} lastError={error} onInsert={(sql) => editor.current?.insert(sql)} onClose={() => setAsking(false)} />}
         {focus && <FocusDrawer api={api} conn={conn} cache={getCache(connId)} target={focus} onOpen={onOpen} onClose={() => setFocus(undefined)} onError={onError} />}
       </div>
       {exporting && lastSelect && <ExportDialog api={api} conn={connId} env={env} source={{ type: "query", sql: lastSelect }} label="query result" defaultName="query_result" onClose={() => setExporting(false)} onError={onError} />}

@@ -1,4 +1,4 @@
-import type { ClientStatus, ConnTest, TnsList, DataDiffOptions, DataSide, SchemaDiff, SidePreview, TextDiffResult, TextOptions, AiConfig, AiEvent, AiStatus, AiTest, ChatRequest, Completions, DossierOptions, KbExported, KbPreview, KbSummary, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
+import type { AskContext, AskInput, ContextPolicy, Plan, SqlIssue, ClientStatus, ConnTest, TnsList, DataDiffOptions, DataSide, SchemaDiff, SidePreview, TextDiffResult, TextOptions, AiConfig, AiEvent, AiStatus, AiTest, ChatRequest, Completions, DossierOptions, KbExported, KbPreview, KbSummary, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
 import { mockApi } from "./mock";
 
 /** Every call after `connect` is scoped to one connection id, so several databases can be open at once. */
@@ -82,6 +82,11 @@ export interface Api {
   aiTest(): Promise<AiTest>;
   aiChatStart(request: ChatRequest): Promise<string>;
   aiCancel(id: string): Promise<void>;
+  explainPlan(conn: string, sql: string): Promise<Plan>;
+  askContext(conn: string, owner: string, input: AskInput, policy: ContextPolicy): Promise<AskContext>;
+  askStart(conn: string, owner: string, input: AskInput, policy: ContextPolicy): Promise<{ id: string; context: AskContext }>;
+  askValidate(conn: string, owner: string, sql: string): Promise<SqlIssue[]>;
+  askExtractSql(answer: string): Promise<string[]>;
   onAi(cb: (e: AiEvent) => void): Promise<() => void>;
   // compare (text, data by key, schema); data compare runs as a job and reports through onJob
   textDiff(a: string, b: string, options: TextOptions, context: number | null): Promise<TextDiffResult>;
@@ -166,6 +171,11 @@ async function tauriApi(): Promise<Api> {
     aiTest: () => invoke("ai_test"),
     aiChatStart: (request) => invoke("ai_chat_start", { request }),
     aiCancel: (id) => invoke("ai_cancel", { id }),
+    explainPlan: (conn, sql) => invoke("explain_plan", { conn, sql }),
+    askContext: (conn, owner, input, policy) => invoke("ask_context", { conn, owner, input, policy }),
+    askStart: (conn, owner, input, policy) => invoke("ask_start", { conn, owner, input, policy }),
+    askValidate: (conn, owner, sql) => invoke("ask_validate", { conn, owner, sql }),
+    askExtractSql: (answer) => invoke("ask_extract_sql", { answer }),
     textDiff: (a, b, options, context) => invoke("text_diff", { a, b, options, context }),
     textPatch: (a, b, options, aName, bName, context) => invoke("text_patch", { a, b, options, aName, bName, context }),
     textReadFile: (path) => invoke("text_read_file", { path }),

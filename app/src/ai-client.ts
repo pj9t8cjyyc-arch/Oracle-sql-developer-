@@ -11,6 +11,11 @@ export class AiAuthRequired extends Error {
  * Rejects with {@link AiAuthRequired} when the person must sign in again.
  */
 export function chat(api: Api, request: ChatRequest, onDelta: (text: string) => void): { promise: Promise<ChatResult>; cancel(): void } {
+  return chatWith(api, () => api.aiChatStart(request), onDelta);
+}
+
+/** Same as {@link chat} for any call that starts a streamed answer and returns its id. */
+export function chatWith(api: Api, start: () => Promise<string>, onDelta: (text: string) => void): { promise: Promise<ChatResult>; cancel(): void } {
   let id: string | undefined;
   let cancelled = false;
   const buffered: AiEvent[] = [];
@@ -31,7 +36,7 @@ export function chat(api: Api, request: ChatRequest, onDelta: (text: string) => 
       else if (e.id === id) handle(e);
     }).then((unlisten) => {
       off = unlisten;
-      return api.aiChatStart(request);
+      return start();
     }).then((started) => {
       id = started;
       if (cancelled) void api.aiCancel(started);

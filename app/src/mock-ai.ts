@@ -18,6 +18,8 @@ function status(): AiStatus {
   return { configured: err === null, signed_in: valid, expires_at_ms: token?.expires ?? null, provider: cfg.provider, model: cfg.model, base_url: cfg.base_url, config_error: err };
 }
 
+export const aiListeners = listeners;
+
 export function aiApi(): Pick<Api, "aiStatus" | "aiGetConfig" | "aiSaveConfig" | "aiSetToken" | "aiClearToken" | "aiTest" | "aiChatStart" | "aiCancel" | "onAi"> {
   return {
     aiStatus: async () => status(),
