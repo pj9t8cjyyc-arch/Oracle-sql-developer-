@@ -22,6 +22,7 @@ use crate::{Error, Result};
 const SCHEMA_VERSION: i64 = 1;
 
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS kb_snapshots(
   conn_key TEXT NOT NULL, owner TEXT NOT NULL, taken_at INTEGER NOT NULL, json TEXT NOT NULL,
   PRIMARY KEY(conn_key, owner)
@@ -280,6 +281,26 @@ impl HistoryStore {
         conn.execute_batch(SCHEMA)?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(Self { conn })
+    }
+
+    // ------------------------------------------------------------ settings
+
+    /// Small non-secret settings (never tokens or passwords).
+    pub fn setting_get(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
+    pub fn setting_set(&mut self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
     }
 
     // ------------------------------------------------------------ knowledge base snapshots
@@ -1396,5 +1417,17 @@ mod tests {
             Some((2, "{\"a\":2}".to_string()))
         );
         assert_eq!(h.kb_load("other@h/s", "hr").unwrap().unwrap().0, 3);
+    }
+
+    #[test]
+    fn settings_round_trip_and_overwrite() {
+        let mut h = HistoryStore::in_memory().unwrap();
+        assert_eq!(h.setting_get("ai.config").unwrap(), None);
+        h.setting_set("ai.config", "{\"a\":1}").unwrap();
+        h.setting_set("ai.config", "{\"a\":2}").unwrap();
+        assert_eq!(
+            h.setting_get("ai.config").unwrap().as_deref(),
+            Some("{\"a\":2}")
+        );
     }
 }

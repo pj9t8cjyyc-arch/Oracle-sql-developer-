@@ -1,4 +1,4 @@
-import type { Completions, DossierOptions, KbExported, KbPreview, KbSummary, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
+import type { AiConfig, AiEvent, AiStatus, AiTest, ChatRequest, Completions, DossierOptions, KbExported, KbPreview, KbSummary, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
 import { mockApi } from "./mock";
 
 /** Every call after `connect` is scoped to one connection id, so several databases can be open at once. */
@@ -70,6 +70,16 @@ export interface Api {
   kbStatus(conn: string, owner: string): Promise<KbSummary | null>;
   kbPreview(conn: string, owner: string, options: DossierOptions): Promise<KbPreview>;
   kbExport(conn: string, owner: string, options: DossierOptions, path: string, zip: boolean): Promise<KbExported>;
+  // AI provider layer (the token lives in the app's memory only; calls are made by the core, not by scripts)
+  aiStatus(): Promise<AiStatus>;
+  aiGetConfig(): Promise<AiConfig>;
+  aiSaveConfig(config: AiConfig): Promise<AiStatus>;
+  aiSetToken(token: string, expiresAtMs: number | null): Promise<AiStatus>;
+  aiClearToken(): Promise<AiStatus>;
+  aiTest(): Promise<AiTest>;
+  aiChatStart(request: ChatRequest): Promise<string>;
+  aiCancel(id: string): Promise<void>;
+  onAi(cb: (e: AiEvent) => void): Promise<() => void>;
 }
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -134,6 +144,18 @@ async function tauriApi(): Promise<Api> {
       return () => { a(); b(); };
     },
     jobCancel: (id) => invoke("job_cancel", { id }),
+    aiStatus: () => invoke("ai_status"),
+    aiGetConfig: () => invoke("ai_get_config"),
+    aiSaveConfig: (config) => invoke("ai_save_config", { config }),
+    aiSetToken: (token, expiresAtMs) => invoke("ai_set_token", { token, expiresAtMs }),
+    aiClearToken: () => invoke("ai_clear_token"),
+    aiTest: () => invoke("ai_test"),
+    aiChatStart: (request) => invoke("ai_chat_start", { request }),
+    aiCancel: (id) => invoke("ai_cancel", { id }),
+    async onAi(cb) {
+      const { listen } = await import("@tauri-apps/api/event");
+      return listen("ai-event", (e) => cb(e.payload as never));
+    },
     exportRecommend: (conn, source, purpose) => invoke("export_recommend", { conn, source, purpose }),
     exportStart: (conn, request) => invoke("export_start", { conn, request }),
     importProfile: (path, read) => invoke("import_profile", { path, read }),
