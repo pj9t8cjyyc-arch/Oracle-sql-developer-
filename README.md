@@ -2,6 +2,21 @@
 
 A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React + CodeMirror UI.
 
+## Status: package explorer & linkage graph (Phase 3)
+
+| Piece | State |
+|---|---|
+| **Packages tab** (top bar, or "Members & usage" on a package): every package in a schema with exact signatures (`ALL_PROCEDURES`/`ALL_ARGUMENTS`), public vs private members, tables read/written, packages called, callers, and members nothing references | 14 new core tests; **400 packages / 16,000 members analysed in 156 ms** (release, excluding the database) |
+| Filters: invalid, with unreferenced members, wrapped; filter by package or member name | UI verified in demo mode |
+| **Graph tab** (top bar, or "Graph" on any object): pick an object, see *what it uses*, *what uses it* (what breaks if you change it) or both, 1–6 hops, filter by kind; click re-centres, double-click opens the object | tested (BFS, cycles, caps, kind filter) + UI verified |
+| Everything above **against a real Oracle** | **not run**: ignored test `package_analysis_and_dependency_graph_match_a_known_schema` creates two packages and two tables and checks the result |
+
+**How it works:** the schema's dictionary data and package bodies are loaded once and cached (Reload button re-reads); analysis and graph traversal then run in memory, so changing focus, direction or hops never touches the database.
+
+**Heuristic, said plainly:** calls and table usage come from a lexical scan of the package bodies, not from PL/Scope. It does not see dynamic SQL, callers outside the schema (jobs, applications), or the second and later tables of a `FROM a, b` list. "Not referenced" means *no caller found in this schema*, not "safe to delete". Wrapped bodies are listed but cannot be scanned. Graph edges come from `ALL_DEPENDENCIES` (the object's own schema) and foreign keys; objects in other schemas show up when this schema uses them.
+
+**Not built yet:** PL/Scope as an exact source for calls, column-level lineage, persisting the analysis in the local SQLite file, exporting the graph as an image.
+
 ## Status: import & export (Phase 2)
 
 | Piece | State |
@@ -41,8 +56,8 @@ A fast, lightweight, agent-ready Oracle SQL IDE. Rust core, Tauri shell, React +
 
 ## Plan: what comes next (to discuss)
 
-1. **Package explorer** (you have 300–400 packages): index every package member from `ALL_PROCEDURES` / `ALL_ARGUMENTS` (signatures, overloads), keep the source in the existing FTS5 index, and show per package: members with signatures, who calls it, which tables it reads or writes, size, invalid/wrapped state, and members nothing references (dead-code candidates). Calls come from PL/Scope (`ALL_IDENTIFIERS`) when the code was compiled with `PLSCOPE_SETTINGS='IDENTIFIERS:ALL'`, otherwise from our own parser (heuristic, labelled as such). A virtualised tree and lazy source loading keep 400 packages instant.
-2. **Linkage graph tab**: nodes = tables, views, packages, procedures, triggers, sequences; edges = foreign keys, `ALL_DEPENDENCIES`, trigger→table/sequence. Two questions answered directly: *"what breaks if I change this?"* (used-by closure) and *"what does this need?"* (uses closure), with hop limits and type filters so a big schema stays readable. The graph data is cached in the same SQLite file and traversed with recursive queries.
+1. ~~**Package explorer**~~ **built (Phase 3)**; original plan: (you have 300–400 packages): index every package member from `ALL_PROCEDURES` / `ALL_ARGUMENTS` (signatures, overloads), keep the source in the existing FTS5 index, and show per package: members with signatures, who calls it, which tables it reads or writes, size, invalid/wrapped state, and members nothing references (dead-code candidates). Calls come from PL/Scope (`ALL_IDENTIFIERS`) when the code was compiled with `PLSCOPE_SETTINGS='IDENTIFIERS:ALL'`, otherwise from our own parser (heuristic, labelled as such). A virtualised tree and lazy source loading keep 400 packages instant.
+2. ~~**Linkage graph tab**~~ **built (Phase 3)**; original plan: nodes = tables, views, packages, procedures, triggers, sequences; edges = foreign keys, `ALL_DEPENDENCIES`, trigger→table/sequence. Two questions answered directly: *"what breaks if I change this?"* (used-by closure) and *"what does this need?"* (uses closure), with hop limits and type filters so a big schema stays readable. The graph data is cached in the same SQLite file and traversed with recursive queries.
 3. **AI** (needs your input): where your existing AI code runs (Rust, Python sidecar, remote service) and which provider decides the shape. My suggestion: a provider trait with a local-model option; send **metadata and your own history, never row data**, by default; uses in this order: (a) NL→SQL grounded in the schema *and the queries you have already run*, (b) explain a package/trigger, (c) worksheet titles and summaries, (d) optimisation hints next to the explain plan. Anything the AI writes passes the same safe-mode guard, and only read-only statements run without confirmation.
 4. **DuckDB**: keep for analytics, not as a second copy of history. It can `ATTACH` the SQLite file directly, so "how did this query's runtime change over a year" needs no duplicate. DuckDB's main job stays the AWR/ASH-style monitor and fast file profiling for import/export.
 5. Still pending from before: parallel export, sandbox simulation, explain-plan viewer, and running the ignored integration tests against a real Oracle.

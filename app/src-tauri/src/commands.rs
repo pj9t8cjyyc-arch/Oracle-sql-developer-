@@ -43,6 +43,9 @@ pub struct AppState {
     pub(crate) job_seq: AtomicU64,
     /// Profiled import files, so editing the column mapping does not re-read the file.
     pub(crate) profiles: Mutex<HashMap<String, Arc<ora_core::import::profile::FileProfile>>>,
+    /// Package analyses and dependency graphs per `connection|SCHEMA`; rebuilt on request.
+    analyses: Mutex<HashMap<String, Arc<ora_core::packages::PackageAnalysis>>>,
+    graphs: Mutex<HashMap<String, Arc<ora_core::graph::Graph>>>,
 }
 
 impl AppState {
@@ -58,6 +61,8 @@ impl AppState {
             jobs: Mutex::default(),
             job_seq: AtomicU64::new(0),
             profiles: Mutex::default(),
+            analyses: Mutex::default(),
+            graphs: Mutex::default(),
         }
     }
 }
@@ -708,4 +713,86 @@ pub fn statements(sql: String) -> Vec<StatementRange> {
             text: s.text,
         })
         .collect()
+}
+
+// ------------------------------------------------------------ packages + linkage graph
+
+fn cache_key(conn: &str, owner: &str) -> String {
+    format!("{conn}|{}", owner.to_uppercase())
+}
+
+/// Every package of a schema: members, signatures, calls, tables read/written, unreferenced members.
+/// Cached until `refresh` is true (it reads all package bodies).
+#[tauri::command]
+pub async fn package_analysis(
+    state: State<'_, AppState>,
+    conn: String,
+    owner: String,
+    refresh: bool,
+) -> CmdResult<Arc<ora_core::packages::PackageAnalysis>> {
+    let key = cache_key(&conn, &owner);
+    if !refresh {
+        if let Some(a) = state.analyses.lock().unwrap().get(&key) {
+            return Ok(a.clone());
+        }
+    }
+    let db = current(&state, &conn)?.db;
+    let a =
+        Arc::new(blocking(move || ora_core::packages::analyze_schema(db.as_ref(), &owner)).await?);
+    state.analyses.lock().unwrap().insert(key, a.clone());
+    Ok(a)
+}
+
+async fn graph_for(
+    state: &State<'_, AppState>,
+    conn: &str,
+    owner: &str,
+    refresh: bool,
+) -> CmdResult<Arc<ora_core::graph::Graph>> {
+    let key = cache_key(conn, owner);
+    if !refresh {
+        if let Some(g) = state.graphs.lock().unwrap().get(&key) {
+            return Ok(g.clone());
+        }
+    }
+    let db = current(state, conn)?.db;
+    let owner = owner.to_string();
+    let g = Arc::new(blocking(move || ora_core::graph::load(db.as_ref(), &owner)).await?);
+    state.graphs.lock().unwrap().insert(key, g.clone());
+    Ok(g)
+}
+
+#[tauri::command]
+pub async fn graph_info(
+    state: State<'_, AppState>,
+    conn: String,
+    owner: String,
+    refresh: bool,
+) -> CmdResult<ora_core::graph::GraphInfo> {
+    Ok(graph_for(&state, &conn, &owner, refresh).await?.info())
+}
+
+#[tauri::command]
+pub async fn graph_search(
+    state: State<'_, AppState>,
+    conn: String,
+    owner: String,
+    query: String,
+) -> CmdResult<Vec<ora_core::graph::GNode>> {
+    Ok(graph_for(&state, &conn, &owner, false)
+        .await?
+        .search(&query, 30))
+}
+
+#[tauri::command]
+pub async fn graph_focus(
+    state: State<'_, AppState>,
+    conn: String,
+    owner: String,
+    focus: ora_core::graph::Focus,
+) -> CmdResult<ora_core::graph::Subgraph> {
+    graph_for(&state, &conn, &owner, false)
+        .await?
+        .focus(&focus)
+        .ok_or_else(|| "that object is not in the graph".to_string())
 }

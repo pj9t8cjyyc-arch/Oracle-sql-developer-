@@ -26,6 +26,10 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_profiles,
+            commands::package_analysis,
+            commands::graph_info,
+            commands::graph_search,
+            commands::graph_focus,
             commands::save_profile,
             commands::delete_profile,
             commands::connect,

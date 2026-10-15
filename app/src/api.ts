@@ -1,4 +1,4 @@
-import type { Completions, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
+import type { Completions, GNode, GraphFocus, GraphInfo, PackageAnalysis, Subgraph, ConnInfo, ExportRequest, ExportSource, FileProfile, ImportOptions, JobEvent, MappingPlan, PlanInput, Purpose, ReadOptions, RecommendationInfo, HistoryHit, HistoryQuery, HistoryStatus, Hit, ObjectDeps, ObjectEntry, Page, Profile, RefreshStats, RunResult, SequenceInfo, StatementRange, Step, TableInsight, TableRef, WorksheetFilter, WorksheetRec, WorksheetSave } from "./types";
 import { mockApi } from "./mock";
 
 /** Every call after `connect` is scoped to one connection id, so several databases can be open at once. */
@@ -60,6 +60,11 @@ export interface Api {
   importCreateTable(conn: string, ddl: string): Promise<void>;
   importValidateStart(path: string, read: ReadOptions, plan: MappingPlan, trim: boolean): Promise<string>;
   importStart(conn: string, path: string, read: ReadOptions, plan: MappingPlan, options: ImportOptions): Promise<string>;
+  // packages + linkage graph (computed once per schema, then cached until refresh)
+  packageAnalysis(conn: string, owner: string, refresh: boolean): Promise<PackageAnalysis>;
+  graphInfo(conn: string, owner: string, refresh: boolean): Promise<GraphInfo>;
+  graphSearch(conn: string, owner: string, query: string): Promise<GNode[]>;
+  graphFocus(conn: string, owner: string, focus: GraphFocus): Promise<Subgraph>;
 }
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -132,6 +137,10 @@ async function tauriApi(): Promise<Api> {
     importCreateTable: (conn, ddl) => invoke("import_create_table", { conn, ddl }),
     importValidateStart: (path, read, plan, trim) => invoke("import_validate_start", { path, read, plan, trim }),
     importStart: (conn, path, read, plan, options) => invoke("import_start", { conn, path, read, plan, options }),
+    packageAnalysis: (conn, owner, refresh) => invoke("package_analysis", { conn, owner, refresh }),
+    graphInfo: (conn, owner, refresh) => invoke("graph_info", { conn, owner, refresh }),
+    graphSearch: (conn, owner, query) => invoke("graph_search", { conn, owner, query }),
+    graphFocus: (conn, owner, focus) => invoke("graph_focus", { conn, owner, focus }),
   };
 }
 

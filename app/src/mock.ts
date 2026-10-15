@@ -4,6 +4,7 @@
 // none of this runs in the real app.
 import type { Api } from "./api";
 import { mockHistory, record } from "./mock-history";
+import { graphApi } from "./mock-graph";
 import { transferApi } from "./mock-transfer";
 import type {
   Analysis, Column, ColumnInsight, Completions, ConnInfo, Hit, ObjectDeps, ObjectEntry, ObjectKind, Profile, Row, RunResult, SeqUse,
@@ -375,6 +376,7 @@ const transfer = transferApi({
 
 export const mockApi: Api = {
   ...transfer,
+  ...graphApi(),
   historyStatus: () => mockHistory.status(),
   historySetEnabled: (e) => mockHistory.setEnabled(e),
   historySearch: (q) => mockHistory.search(q),
